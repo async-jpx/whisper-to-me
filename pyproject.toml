@@ -1,0 +1,23 @@
+[project]
+name = "whisper-to-me"
+version = "0.1.0"
+description = "Local, private meeting listener: live transcription + AI summaries, fully on-device"
+readme = "README.md"
+authors = [
+    { name = "async-jpx", email = "del-khay@student.1337.ma" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper>=1.1",
+    "sounddevice>=0.5",
+    "numpy>=1.26",
+    "requests>=2.31",
+    "rich>=13.0",
+]
+
+[project.scripts]
+wtm = "whisper_to_me.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.27,<0.10.0"]
+build-backend = "uv_build"
