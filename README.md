@@ -31,6 +31,7 @@ uv run wtm record --title "Team sync"     # live-transcribe; Ctrl-C to stop & su
 uv run wtm watch                          # Notion-style: auto-detects meetings & takes notes
 uv run wtm transcribe recording.wav       # transcribe + summarize an audio file
 uv run wtm summarize transcript.md        # (re)summarize existing text
+uv run wtm simulate --mic a.wav --system b.wav   # replay files through the pipeline (testing)
 ```
 
 Useful flags: `--model small|medium|large-v3` (Whisper size), `--language en`,
@@ -58,9 +59,10 @@ headphones. Lines from both sources are merged by time.
   (BlackHole etc.) are used as fallback.
 - Transcript lines are journaled to the note file *as they are spoken*, so a
   crash or kill never loses the transcript; the summary is added at the end.
-- If audio plays through speakers (no headphones), the mic hears it too and
-  lines can appear under both You and Others — harmless, and the summarizer
-  copes.
+- If audio plays through speakers (no headphones), the mic hears it too. An
+  echo filter drops mic lines that duplicate a time-overlapping system-audio
+  line, so remote speech doesn't reappear under **You**; disable it with
+  `--keep-echoes`.
 
 ## Performance notes
 

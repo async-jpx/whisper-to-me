@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +77,9 @@ class Recorder:
         self._stream: sd.InputStream | None = None
         self._chunker: threading.Thread | None = None
         self.peak_level = 0.0  # most recent block RMS, for a live meter
+        # When set, chunk timestamps are epoch + sample position instead of
+        # wall clock — lets replayed files (FileRecorder) share one timeline.
+        self.epoch: datetime | None = None
 
     def _callback(self, indata, frames, time_info, status) -> None:
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
@@ -110,6 +113,7 @@ class Recorder:
         chunk_started: datetime | None = None
         speech_blocks = 0
         silence_run = 0
+        blocks_seen = 0
 
         def flush() -> None:
             nonlocal buffer, chunk_started, speech_blocks, silence_run
@@ -123,6 +127,7 @@ class Recorder:
                 if buffer:
                     flush()
                 return
+            blocks_seen += 1
 
             rms = float(np.sqrt(np.mean(block**2)))
             self.peak_level = rms
@@ -135,7 +140,13 @@ class Recorder:
             if not buffer:
                 # Speech onset: include the pre-roll so the first word
                 # isn't clipped mid-phoneme.
-                chunk_started = datetime.now()
+                if self.epoch is not None:
+                    first_block = blocks_seen - 1 - len(pre_roll)
+                    chunk_started = self.epoch + timedelta(
+                        seconds=first_block * BLOCK_SECONDS
+                    )
+                else:
+                    chunk_started = datetime.now()
                 buffer.extend(pre_roll)
                 pre_roll.clear()
             buffer.append(block)
@@ -221,3 +232,51 @@ class SystemAudioTap(Recorder):
 
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+
+class FileRecorder(Recorder):
+    """Replays an audio file through the utterance chunker as if it were a
+    live source — the no-device test path behind `wtm simulate`. All
+    FileRecorders in a session share one `epoch` so their chunk timestamps
+    land on a common timeline and merge exactly like live sources."""
+
+    def __init__(self, path: Path | str, epoch: datetime):
+        super().__init__(device=None)
+        self.epoch = epoch
+        self._path = str(path)
+        self._pump: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._pump = threading.Thread(target=self._pump_loop, daemon=True)
+        self._pump.start()
+        self._chunker = threading.Thread(target=self._chunk_loop, daemon=True)
+        self._chunker.start()
+
+    def _pump_loop(self) -> None:
+        from faster_whisper.audio import decode_audio  # deferred: heavy import
+
+        samples = decode_audio(self._path, sampling_rate=SAMPLE_RATE)
+        for i in range(0, len(samples), BLOCK_FRAMES):
+            block = samples[i : i + BLOCK_FRAMES]
+            if len(block) < BLOCK_FRAMES:
+                block = np.pad(block, (0, BLOCK_FRAMES - len(block)))
+            self._blocks.put(block)
+        self._blocks.put(None)
+
+    @property
+    def finished(self) -> bool:
+        """True once the file is fully pumped and chunked (transcription of
+        already-queued chunks may still be running)."""
+        return (
+            self._pump is not None
+            and not self._pump.is_alive()
+            and self._chunker is not None
+            and not self._chunker.is_alive()
+        )
+
+    def stop(self) -> None:
+        if self._pump is not None:
+            self._pump.join(timeout=10)
+        if self._chunker is not None:
+            self._chunker.join(timeout=10)
+        self.chunks.put(None)

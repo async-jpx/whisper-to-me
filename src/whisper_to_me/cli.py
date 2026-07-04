@@ -5,6 +5,7 @@
     wtm watch                   auto-detect meetings (mic activity) and take notes
     wtm transcribe FILE         transcribe an audio file into a note
     wtm summarize FILE          (re)summarize an existing transcript / text file
+    wtm simulate --mic F [--system F]   replay files through the live pipeline (testing)
 """
 
 from __future__ import annotations
@@ -20,7 +21,13 @@ from rich.table import Table
 
 from . import audio, notes
 from . import summarize as summ
-from .session import console, load_transcriber, record_session, summarize_and_save
+from .session import (
+    console,
+    load_transcriber,
+    record_session,
+    simulate_session,
+    summarize_and_save,
+)
 
 
 def cmd_devices(_args) -> None:
@@ -67,6 +74,25 @@ def cmd_record(args) -> None:
         Path(args.notes_dir),
         device=args.device,
         system_device=args.system_device,
+        keep_echoes=args.keep_echoes,
+    )
+    _finish(args, transcript_lines, started)
+
+
+def cmd_simulate(args) -> None:
+    transcriber = load_transcriber(args.model, args.language)
+    console.print(
+        f"[bold green]▶ Simulating[/bold green] mic='{args.mic}'"
+        + (f" system='{args.system}'" if args.system else "")
+        + " — replaying through the live pipeline.\n"
+    )
+    transcript_lines, started = simulate_session(
+        transcriber,
+        args.title,
+        Path(args.notes_dir),
+        args.mic,
+        system_path=args.system,
+        keep_echoes=args.keep_echoes,
     )
     _finish(args, transcript_lines, started)
 
@@ -117,6 +143,7 @@ def cmd_watch(args) -> None:
                 device=args.device,
                 system_device=args.system_device,
                 should_stop=should_stop,
+                keep_echoes=args.keep_echoes,
             )
             _finish(args, transcript_lines, started)
             watch.notify("whisper-to-me", f"Notes saved for: {title}")
@@ -174,6 +201,8 @@ def main() -> None:
 
     p_rec = sub.add_parser("record", help="record, live-transcribe and summarize a meeting")
     p_rec.add_argument("--device", type=int, default=None, help="input device index (see `wtm devices`)")
+    p_rec.add_argument("--keep-echoes", action="store_true",
+                       help="disable the filter that drops mic lines duplicating system audio")
     _add_common(p_rec)
     p_rec.set_defaults(func=cmd_record)
 
@@ -184,8 +213,21 @@ def main() -> None:
         "--silence-timeout", type=float, default=120.0,
         help="stop recording after this many seconds of silence",
     )
+    p_w.add_argument("--keep-echoes", action="store_true",
+                     help="disable the filter that drops mic lines duplicating system audio")
     _add_common(p_w)
     p_w.set_defaults(func=cmd_watch)
+
+    p_sim = sub.add_parser(
+        "simulate",
+        help="replay audio files through the live pipeline (no devices) — for testing",
+    )
+    p_sim.add_argument("--mic", required=True, help="audio file replayed as the microphone (You)")
+    p_sim.add_argument("--system", default=None, help="audio file replayed as system audio (Others)")
+    p_sim.add_argument("--keep-echoes", action="store_true",
+                       help="disable the filter that drops mic lines duplicating system audio")
+    _add_common(p_sim)
+    p_sim.set_defaults(func=cmd_simulate)
 
     p_tr = sub.add_parser("transcribe", help="transcribe an audio file into a note")
     p_tr.add_argument("file")

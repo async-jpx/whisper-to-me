@@ -14,6 +14,7 @@ uv run wtm record           # record + live-transcribe + summarize (Ctrl-C stops
 uv run wtm watch            # auto-detect meetings, Notion-style
 uv run wtm transcribe F     # audio file -> note
 uv run wtm summarize F      # re-summarize a transcript
+uv run wtm simulate --mic F [--system F]  # replay files through the live pipeline (no devices)
 uv run ruff check src/     # lint (also runs via hook on edits)
 ```
 
@@ -28,6 +29,8 @@ audio.py       Recorder (mic, 16kHz mono blocks -> energy-VAD utterance chunker,
 system_audio_tap.swift  ScreenCaptureKit helper: all-app system audio -> 16kHz
                mono f32 on stdout; compiled on demand to ~/.cache/whisper-to-me/
 transcribe.py  faster-whisper wrapper (large-v3-turbo int8, language lock-on)
+dedup.py       cross-source echo filter: drops "You" lines that duplicate a
+               time-overlapping "Others" line (speaker bleed into the mic)
 summarize.py   Ollama HTTP client, structured-notes prompt, map-reduce >40k chars
 notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite
 watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process
@@ -50,6 +53,11 @@ Key invariants:
   Prefer tests that don't need the mic at all.
 - No-mic end-to-end: `say -o /tmp/t.aiff "..."` → `afconvert -f WAVE -d LEI16@16000 -c 1`
   → `uv run wtm transcribe /tmp/t.wav`.
+- Multi-source / echo-filter tests: `wtm simulate --mic a.wav --system b.wav`
+  replays two files through the full chunker→transcribe→dedup→merge pipeline
+  on one timeline (FileRecorder, sample-based timestamps). Compose fixtures by
+  mixing the "others" waveform into the mic track at ~0.35 gain + ~120 ms
+  delay to fake speaker bleed. `--keep-echoes` disables the filter for A/B.
 - System-tap test: the helper exits on stdin EOF, so **hold stdin open**:
   `sleep 9 | ~/.cache/whisper-to-me/system-audio-tap > out.raw` (raw f32 @16k).
   It captures app audio **even with output muted** — use muted `say` or a

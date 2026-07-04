@@ -10,7 +10,7 @@ from typing import Callable
 
 from rich.console import Console
 
-from . import audio, notes
+from . import audio, dedup, notes
 from . import summarize as summ
 
 console = Console()
@@ -67,18 +67,24 @@ def record_session(
     device: int | None = None,
     system_device: str = "auto",
     should_stop: StopCondition | None = None,
+    sources: list[tuple[str, audio.Recorder]] | None = None,
+    started: datetime | None = None,
+    keep_echoes: bool = False,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Record (mic + system audio) until Ctrl-C or should_stop(recorders).
 
     Returns (transcript_lines, started); lines are (stamp, text) sorted by
     capture time, with speaker labels when there is more than one source.
     """
-    sources: list[tuple[str, audio.Recorder]] = [("You", audio.Recorder(device=device))]
-    sources += _system_audio_sources(system_device)
+    if sources is None:
+        sources = [("You", audio.Recorder(device=device))]
+        sources += _system_audio_sources(system_device)
 
-    started = datetime.now()
-    raw_lines: list[tuple[datetime, str, str]] = []  # (capture_time, speaker, text)
+    started = started or datetime.now()
+    raw_lines: list[dedup.Line] = []  # (capture_time, duration_s, speaker, text)
+    suppressed = 0  # echoes caught live, before they hit the journal
     label = len(sources) > 1
+    filter_echoes = label and not keep_echoes
     # Live journal: every line lands on disk immediately, so a crash or kill
     # can never lose the transcript. summarize_and_save rewrites this file
     # with the time-sorted transcript and the summary at the end.
@@ -86,18 +92,31 @@ def record_session(
 
     def make_worker(speaker: str, recorder: audio.Recorder) -> threading.Thread:
         def worker() -> None:
+            nonlocal suppressed
             while True:
                 item = recorder.chunks.get()
                 if item is None:
                     return
                 captured_at, chunk = item
+                duration = len(chunk) / audio.SAMPLE_RATE
                 text = transcriber.transcribe_chunk(chunk)
-                if text:
-                    stamp = str(captured_at - started).split(".")[0]
-                    line = f"**{speaker}:** {text}" if label else text
-                    raw_lines.append((captured_at, speaker, text))
-                    notes.append_line(live_path, stamp, line)
-                    console.print(f"[dim][{stamp}][/dim] [bold]{speaker}:[/bold] {text}")
+                if not text:
+                    continue
+                # Live pass: skip a mic line that is already on screen as an
+                # "Others" line (speaker bleed). The final pass below also
+                # catches the reverse arrival order.
+                if (
+                    filter_echoes
+                    and speaker == dedup.ECHO_SPEAKER
+                    and dedup.matches_any(captured_at, duration, text, raw_lines)
+                ):
+                    suppressed += 1
+                    continue
+                stamp = str(captured_at - started).split(".")[0]
+                line = f"**{speaker}:** {text}" if label else text
+                raw_lines.append((captured_at, duration, speaker, text))
+                notes.append_line(live_path, stamp, line)
+                console.print(f"[dim][{stamp}][/dim] [bold]{speaker}:[/bold] {text}")
 
         return threading.Thread(target=worker)
 
@@ -121,12 +140,51 @@ def record_session(
     for w in workers:
         w.join()
 
+    if filter_echoes:
+        kept = dedup.drop_echoes(raw_lines)
+        dropped = suppressed + len(raw_lines) - len(kept)
+        if dropped:
+            console.print(
+                f"[dim]Echo filter: removed {dropped} mic line(s) that were "
+                "the speakers bleeding into the microphone.[/dim]"
+            )
+        raw_lines = kept
+
     raw_lines.sort(key=lambda line: line[0])
     transcript_lines = [
         (str(t - started).split(".")[0], f"**{speaker}:** {text}" if label else text)
-        for t, speaker, text in raw_lines
+        for t, _dur, speaker, text in raw_lines
     ]
     return transcript_lines, started
+
+
+def simulate_session(
+    transcriber,
+    title: str,
+    notes_dir: Path,
+    mic_path: str,
+    system_path: str | None = None,
+    keep_echoes: bool = False,
+) -> tuple[list[tuple[str, str]], datetime]:
+    """Replay audio files through the live pipeline — chunking, transcription,
+    echo filtering, merging — with no audio devices. The regression-test path:
+    the mic file plays as "You", the system file as "Others", on one timeline.
+    """
+    epoch = datetime.now()
+    sources: list[tuple[str, audio.Recorder]] = [
+        ("You", audio.FileRecorder(mic_path, epoch))
+    ]
+    if system_path:
+        sources.append(("Others", audio.FileRecorder(system_path, epoch)))
+    return record_session(
+        transcriber,
+        title,
+        notes_dir,
+        sources=sources,
+        started=epoch,
+        keep_echoes=keep_echoes,
+        should_stop=lambda recorders: all(r.finished for r in recorders),
+    )
 
 
 def summarize_and_save(
