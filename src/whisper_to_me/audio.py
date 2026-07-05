@@ -80,6 +80,10 @@ class Recorder:
         # When set, chunk timestamps are epoch + sample position instead of
         # wall clock — lets replayed files (FileRecorder) share one timeline.
         self.epoch: datetime | None = None
+        # Echo-cancellation hooks (see echo_cancel.EchoCanceller): the system
+        # source publishes its raw blocks; the mic source filters its own.
+        self.block_listener = None  # called with every raw block, None at end
+        self.preprocess = None      # block -> block, applied before chunking
 
     def _callback(self, indata, frames, time_info, status) -> None:
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
@@ -124,10 +128,16 @@ class Recorder:
         while True:
             block = self._blocks.get()
             if block is None:
+                if self.block_listener is not None:
+                    self.block_listener(None)
                 if buffer:
                     flush()
                 return
             blocks_seen += 1
+            if self.block_listener is not None:
+                self.block_listener(block)
+            if self.preprocess is not None:
+                block = self.preprocess(block)
 
             rms = float(np.sqrt(np.mean(block**2)))
             self.peak_level = rms

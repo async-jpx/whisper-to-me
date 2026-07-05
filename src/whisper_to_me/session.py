@@ -70,6 +70,7 @@ def record_session(
     sources: list[tuple[str, audio.Recorder]] | None = None,
     started: datetime | None = None,
     keep_echoes: bool = False,
+    use_aec: bool = True,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Record (mic + system audio) until Ctrl-C or should_stop(recorders).
 
@@ -79,6 +80,18 @@ def record_session(
     if sources is None:
         sources = [("You", audio.Recorder(device=device))]
         sources += _system_audio_sources(system_device)
+
+    if use_aec and len(sources) == 2:
+        # Cancel speaker bleed from the mic signal itself, using the system
+        # source as the reference. The text-level echo filter stays on as a
+        # backstop for the convergence window and residuals.
+        from .echo_cancel import EchoCanceller  # deferred: numpy-heavy
+
+        canceller = EchoCanceller(
+            realtime=not isinstance(sources[1][1], audio.FileRecorder)
+        )
+        sources[1][1].block_listener = canceller.add_reference
+        sources[0][1].preprocess = canceller.process
 
     started = started or datetime.now()
     raw_lines: list[dedup.Line] = []  # (capture_time, duration_s, speaker, text)
@@ -194,6 +207,7 @@ def simulate_session(
     mic_path: str,
     system_path: str | None = None,
     keep_echoes: bool = False,
+    use_aec: bool = True,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Replay audio files through the live pipeline — chunking, transcription,
     echo filtering, merging — with no audio devices. The regression-test path:
@@ -212,6 +226,7 @@ def simulate_session(
         sources=sources,
         started=epoch,
         keep_echoes=keep_echoes,
+        use_aec=use_aec,
         should_stop=lambda recorders: all(r.finished for r in recorders),
     )
 
