@@ -36,10 +36,12 @@ from .session import load_transcriber, record_session, simulate_session, summari
 
 STATIC_DIR = Path(__file__).with_name("static")
 
-# "summary" is a CLI-only extra on the `saved` event (see session.py) so
-# ConsoleSink can print the note body; the wire contract for real clients is
-# just path/title/name, and a UI fetches the body via GET /api/notes/{name}.
-_WIRE_EXCLUDE = {"summary"}
+# CLI-only extras (see session.py) stripped before events hit the wire:
+# "summary" on `saved` lets ConsoleSink print the note body (clients fetch it
+# via GET /api/notes/{name}); "label" on `line` tells us whether the session
+# has >1 source — the contract wants speaker=null when it doesn't, while the
+# CLI keeps printing the speaker either way.
+_WIRE_EXCLUDE = {"summary", "label"}
 
 
 @dataclass
@@ -139,6 +141,8 @@ class SessionManager:
             return
         wire = {k: v for k, v in event.items() if k not in _WIRE_EXCLUDE}
         if wire.get("type") == "line":
+            if not event.get("label"):
+                wire["speaker"] = None  # single source: no speaker labels
             self._lines.append(wire)
         self._broadcast(wire)
 
@@ -438,13 +442,29 @@ def create_app(opts: ServerOptions) -> FastAPI:
     async def events_ws(ws: WebSocket) -> None:
         await ws.accept()
         client = manager.add_client()
+
+        async def sender() -> None:
+            while True:
+                try:
+                    # The 1s timeout bounds how long a cancelled sender's
+                    # executor thread lingers in queue.get — an untimed get
+                    # would pin one ThreadPoolExecutor slot per dead client
+                    # until the next event, eventually starving all clients.
+                    event = await asyncio.to_thread(client.queue.get, True, 1.0)
+                except queue.Empty:
+                    continue
+                await ws.send_json(event)
+
+        sender_task = asyncio.create_task(sender())
         try:
             while True:
-                event = await asyncio.to_thread(client.queue.get)
-                await ws.send_json(event)
+                # We never expect client messages; this read exists to notice
+                # a disconnect immediately instead of on the next failed send.
+                await ws.receive_text()
         except WebSocketDisconnect:
             pass
         finally:
+            sender_task.cancel()
             manager.remove_client(client)
 
     return app

@@ -191,7 +191,17 @@ def record_session(
                     line = f"**{speaker}:** {text}" if label else text
                     raw_lines.append((seg_at, duration, speaker, text))
                     notes.append_line(live_path, stamp, line)
-                    sink({"type": "line", "stamp": stamp, "speaker": speaker, "text": text})
+                    # "label" is a CLI-only helper: ConsoleSink always prints
+                    # the speaker (the pre-event CLI did too, even solo), but
+                    # the wire contract wants speaker=null for single-source
+                    # sessions — server.py nulls it and strips this field.
+                    sink({
+                        "type": "line",
+                        "stamp": stamp,
+                        "speaker": speaker,
+                        "text": text,
+                        "label": label,
+                    })
 
         return threading.Thread(target=worker)
 
