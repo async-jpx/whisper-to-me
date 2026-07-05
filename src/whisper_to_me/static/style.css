@@ -122,6 +122,26 @@ body {
   color: var(--text);
 }
 
+.sidebar-search {
+  padding: 0.25rem 0.75rem 0.5rem;
+}
+
+.sidebar-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.sidebar-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .notes-list {
   list-style: none;
   margin: 0;
@@ -168,6 +188,25 @@ body {
   font-size: 0.75rem;
   color: var(--text-secondary);
   margin-top: 0.1rem;
+}
+
+.note-snippet {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+  margin-top: 0.15rem;
+  word-break: break-word;
+}
+
+.note-snippet mark {
+  background: var(--accent-tint);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 .live-item {
@@ -394,6 +433,47 @@ body {
 
 /* ---------- note view (rendered markdown) ---------- */
 
+.note-container {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.note-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.note-toolbar span {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.btn-sm {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.65rem;
+}
+
+.note-editor {
+  width: 100%;
+  min-height: 65vh;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  resize: vertical;
+}
+
+.note-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .note-view {
   max-width: 46rem;
   margin: 0 auto;
@@ -437,6 +517,114 @@ body {
 
 .note-view strong {
   font-weight: 600;
+}
+
+.note-view code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+
+.note-view pre {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+}
+
+.note-view pre code {
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.note-view blockquote {
+  margin: 0.6rem 0;
+  padding: 0.1rem 0 0.1rem 0.9rem;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.note-view table {
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.85rem;
+}
+
+.note-view th, .note-view td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.7rem;
+  text-align: left;
+}
+
+.note-view th {
+  background: var(--bg-sidebar);
+  font-weight: 600;
+}
+
+/* task lists (Action Items) */
+
+.note-view .contains-task-list {
+  list-style: none;
+  padding-left: 0.3rem;
+}
+
+.note-view .task-list-item-checkbox {
+  accent-color: var(--accent);
+  margin-right: 0.5rem;
+  cursor: pointer;
+}
+
+/* collapsible transcript */
+
+.transcript-fold {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+
+.transcript-fold summary {
+  cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+  list-style-position: outside;
+  margin-bottom: 0.5rem;
+}
+
+.transcript-fold summary:hover {
+  color: var(--accent);
+}
+
+.md-stamp {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  scroll-margin: 30vh;
+}
+
+.md-stamp.flash {
+  animation: stamp-flash 1.6s ease-out;
+}
+
+@keyframes stamp-flash {
+  0%, 40% { background: var(--accent-tint); box-shadow: 0 0 0 4px var(--accent-tint); }
+  100% { background: transparent; box-shadow: none; }
+}
+
+.stamp-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.stamp-link:hover {
+  text-decoration: underline;
 }
 
 /* ---------- toasts ---------- */

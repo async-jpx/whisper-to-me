@@ -7,6 +7,9 @@
     status: { state: "idle", title: null, started: null, elapsed_s: null },
     notes: [],
     currentNote: null, // note name currently shown in the note view
+    currentNoteMd: null, // its raw markdown (edit / copy / checkbox sync)
+    editing: false,
+    searchResults: null, // null = no active search; [] = search with no hits
     view: "empty", // "empty" | "transcript" | "note"
     autoScroll: true,
     daemonUp: false,
@@ -23,9 +26,18 @@
     recordBtn: document.getElementById("record-btn"),
     watchBtn: document.getElementById("watch-btn"),
     notesList: document.getElementById("notes-list"),
+    searchInput: document.getElementById("search-input"),
     emptyState: document.getElementById("empty-state"),
     transcript: document.getElementById("transcript"),
+    noteContainer: document.getElementById("note-container"),
     noteView: document.getElementById("note-view"),
+    noteEditor: document.getElementById("note-editor"),
+    viewActions: document.getElementById("view-actions"),
+    editActions: document.getElementById("edit-actions"),
+    editBtn: document.getElementById("edit-btn"),
+    copyBtn: document.getElementById("copy-btn"),
+    saveBtn: document.getElementById("save-btn"),
+    cancelBtn: document.getElementById("cancel-btn"),
     toasts: document.getElementById("toasts"),
   };
 
@@ -78,79 +90,129 @@
     }, 4000);
   }
 
-  // ---------- minimal markdown renderer ----------
-  // Supports exactly what notes.py / summarize.py produce: # / ## / ###
-  // headings, **bold**, "* "/"- " bullet lists, "---" horizontal rules,
-  // and paragraphs. All text is HTML-escaped before any markup is applied.
+  // ---------- markdown rendering (vendored markdown-it, no CDN) ----------
+  // html:false keeps raw HTML in notes escaped — content comes from speech
+  // and a local LLM, so it is never trusted as markup. breaks:true gives the
+  // single-newline transcript lines their own visual lines.
 
-  function renderInline(text) {
-    const escaped = escapeHtml(text);
-    // notes.py wraps the "*Recorded ... — whisper-to-me*" subtitle line in a
-    // single-asterisk emphasis; ** is replaced first so a lone * is never
-    // mistaken for half of a bold marker.
-    return escaped
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>");
+  const md = window
+    .markdownit({ html: false, linkify: false, breaks: true })
+    .use(window.markdownitTaskLists, { enabled: true });
+
+  const STAMP_RE = /^\[(\d+:\d{2}:\d{2})\]$/;
+
+  function renderNote(mdText) {
+    el.noteView.innerHTML = md.render(mdText);
+    enhanceCheckboxes();
+    foldTranscript();
+    anchorStamps();
   }
 
-  function renderMarkdown(md) {
-    const lines = md.replace(/\r\n/g, "\n").split("\n");
-    let html = "";
-    let paragraph = [];
-
-    function flushParagraph() {
-      if (paragraph.length) {
-        html += `<p>${renderInline(paragraph.join(" "))}</p>`;
-        paragraph = [];
-      }
-    }
-
-    let i = 0;
-    while (i < lines.length) {
-      const raw = lines[i];
-      const trimmed = raw.trim();
-
-      if (trimmed === "") {
-        flushParagraph();
-        i++;
-        continue;
-      }
-
-      if (trimmed === "---" || trimmed === "***") {
-        flushParagraph();
-        html += "<hr>";
-        i++;
-        continue;
-      }
-
-      const heading = trimmed.match(/^(#{1,3})\s+(.*)$/);
-      if (heading) {
-        flushParagraph();
-        const level = heading[1].length;
-        html += `<h${level}>${renderInline(heading[2])}</h${level}>`;
-        i++;
-        continue;
-      }
-
-      const bulletMatch = trimmed.match(/^[*-]\s+(.*)$/);
-      if (bulletMatch) {
-        flushParagraph();
-        const items = [];
-        while (i < lines.length) {
-          const m = lines[i].trim().match(/^[*-]\s+(.*)$/);
-          if (!m) break;
-          items.push(m[1]);
-          i++;
+  // Checkbox order in the DOM mirrors task-line order in the file (the
+  // server's _TASK_RE matches exactly what the task-lists plugin renders),
+  // so the nth checkbox toggles the nth task line.
+  function enhanceCheckboxes() {
+    const boxes = el.noteView.querySelectorAll("input.task-list-item-checkbox");
+    boxes.forEach((box, index) => {
+      box.addEventListener("change", async () => {
+        const resp = await fetch(`/api/notes/${encodeURIComponent(state.currentNote)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task_index: index, checked: box.checked }),
+        }).catch(() => null);
+        if (!resp || !resp.ok) {
+          box.checked = !box.checked;
+          toast(
+            resp && resp.status === 409
+              ? "That note is still being recorded."
+              : "Could not update the task.",
+            "error"
+          );
+          return;
         }
-        html += "<ul>" + items.map((it) => `<li>${renderInline(it)}</li>`).join("") + "</ul>";
-        continue;
-      }
+        // Keep the raw markdown in sync so Edit/Copy see the new state.
+        try {
+          state.currentNoteMd = await fetchNoteContent(state.currentNote);
+        } catch (err) {
+          /* next openNote refetches anyway */
+        }
+      });
+    });
+  }
 
-      paragraph.push(trimmed);
-      i++;
+  // Long transcripts drown the summary: collapse the "## Transcript"
+  // section into a <details> fold, closed by default.
+  function foldTranscript() {
+    for (const h2 of el.noteView.querySelectorAll("h2")) {
+      if (h2.textContent.trim() !== "Transcript") continue;
+      const section = [];
+      for (let node = h2.nextSibling; node; node = node.nextSibling) {
+        if (node.nodeType === 1 && /^H[12]$/.test(node.tagName)) break;
+        section.push(node);
+      }
+      const details = document.createElement("details");
+      details.className = "transcript-fold";
+      const summary = document.createElement("summary");
+      summary.textContent = "Transcript";
+      details.appendChild(summary);
+      h2.replaceWith(details);
+      section.forEach((node) => details.appendChild(node));
+      break;
     }
-    flushParagraph();
-    return html;
+  }
+
+  // Transcript stamps (**[0:03:12]**) become anchor targets; a [0:03:12]
+  // reference anywhere else in the note becomes a link that opens the fold
+  // and flashes that line.
+  function anchorStamps() {
+    const fold = el.noteView.querySelector(".transcript-fold");
+    if (!fold) return;
+    const ids = new Map(); // stamp text -> first anchor id
+    fold.querySelectorAll("strong").forEach((strong) => {
+      const m = strong.textContent.match(STAMP_RE);
+      if (!m) return;
+      strong.classList.add("md-stamp");
+      if (!ids.has(m[1])) {
+        strong.id = `t-${m[1].replace(/:/g, "-")}`;
+        ids.set(m[1], strong.id);
+      }
+    });
+    if (ids.size === 0) return;
+    el.noteView.querySelectorAll("p, li").forEach((node) => {
+      if (fold.contains(node)) return;
+      for (const child of [...node.childNodes]) {
+        if (child.nodeType !== 3) continue; // text nodes only
+        const parts = child.textContent.split(/\[(\d+:\d{2}:\d{2})\]/);
+        if (parts.length < 3) continue;
+        const frag = document.createDocumentFragment();
+        parts.forEach((part, i) => {
+          if (i % 2 === 0) {
+            if (part) frag.appendChild(document.createTextNode(part));
+            return;
+          }
+          const id = ids.get(part);
+          if (!id) {
+            frag.appendChild(document.createTextNode(`[${part}]`));
+            return;
+          }
+          const link = document.createElement("a");
+          link.className = "stamp-link";
+          link.href = `#${id}`;
+          link.textContent = `[${part}]`;
+          link.addEventListener("click", (evt) => {
+            evt.preventDefault();
+            const target = document.getElementById(id);
+            if (!target) return;
+            fold.open = true;
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            target.classList.remove("flash");
+            requestAnimationFrame(() => target.classList.add("flash"));
+          });
+          frag.appendChild(link);
+        });
+        child.replaceWith(frag);
+      }
+    });
   }
 
   // ---------- API ----------
@@ -190,7 +252,7 @@
     state.view = view;
     el.emptyState.hidden = view !== "empty";
     el.transcript.hidden = view !== "transcript";
-    el.noteView.hidden = view !== "note";
+    el.noteContainer.hidden = view !== "note";
   }
 
   // ---------- session bar ----------
@@ -272,15 +334,20 @@
       el.notesList.appendChild(li);
     }
 
-    if (state.notes.length === 0 && state.status.state === "idle") {
-      const empty = document.createElement("div");
-      empty.className = "notes-empty";
-      empty.textContent = "No notes yet.";
-      el.notesList.appendChild(empty);
+    const searching = state.searchResults !== null;
+    const entries = searching ? state.searchResults : state.notes;
+
+    if (entries.length === 0) {
+      if (searching || state.status.state === "idle") {
+        const empty = document.createElement("div");
+        empty.className = "notes-empty";
+        empty.textContent = searching ? "No matches." : "No notes yet.";
+        el.notesList.appendChild(empty);
+      }
       return;
     }
 
-    for (const note of state.notes) {
+    for (const note of entries) {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.className = "note-item" + (state.currentNote === note.name ? " active" : "");
@@ -292,11 +359,58 @@
       date.textContent = formatRelativeDate(note.modified);
       btn.appendChild(title);
       btn.appendChild(date);
+      if (searching && note.snippet) {
+        const snippet = document.createElement("span");
+        snippet.className = "note-snippet";
+        // Snippets are escaped as plain text first; only the private-use
+        // markers the server put around hits become real <mark> tags.
+        snippet.innerHTML = escapeHtml(note.snippet)
+          .replaceAll("\ue000", "<mark>")
+          .replaceAll("\ue001", "</mark>");
+        btn.appendChild(snippet);
+      }
       btn.addEventListener("click", () => openNote(note.name));
       li.appendChild(btn);
       el.notesList.appendChild(li);
     }
   }
+
+  // ---------- sidebar search ----------
+
+  let searchTimer = null;
+  let searchSeq = 0; // late responses from stale queries must not win
+
+  async function runSearch() {
+    const q = el.searchInput.value.trim();
+    const seq = ++searchSeq;
+    if (!q) {
+      state.searchResults = null;
+      renderNotesList();
+      return;
+    }
+    let results = [];
+    try {
+      const resp = await apiGet(`/api/search?q=${encodeURIComponent(q)}`);
+      results = await resp.json();
+    } catch (err) {
+      /* daemon hiccup: show "No matches." rather than a stale list */
+    }
+    if (seq !== searchSeq) return;
+    state.searchResults = results;
+    renderNotesList();
+  }
+
+  el.searchInput.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 200);
+  });
+  el.searchInput.addEventListener("keydown", (evt) => {
+    if (evt.key === "Escape") {
+      el.searchInput.value = "";
+      clearTimeout(searchTimer);
+      runSearch();
+    }
+  });
 
   async function refreshNotes() {
     try {
@@ -307,17 +421,82 @@
     }
   }
 
+  function editorDirty() {
+    return state.editing && el.noteEditor.value !== state.currentNoteMd;
+  }
+
   async function openNote(name) {
+    if (editorDirty() && !confirm("Discard your unsaved edits?")) return;
     try {
-      const md = await fetchNoteContent(name);
+      const mdText = await fetchNoteContent(name);
       state.currentNote = name;
-      el.noteView.innerHTML = renderMarkdown(md);
+      state.currentNoteMd = mdText;
+      exitEditMode();
+      renderNote(mdText);
       setView("note");
       renderNotesList();
     } catch (err) {
       toast("Could not load that note.", "error");
     }
   }
+
+  // ---------- note toolbar: edit / copy ----------
+
+  function enterEditMode() {
+    state.editing = true;
+    el.noteEditor.value = state.currentNoteMd || "";
+    el.noteView.hidden = true;
+    el.noteEditor.hidden = false;
+    el.viewActions.hidden = true;
+    el.editActions.hidden = false;
+    el.noteEditor.focus();
+  }
+
+  function exitEditMode() {
+    state.editing = false;
+    el.noteEditor.hidden = true;
+    el.noteView.hidden = false;
+    el.viewActions.hidden = false;
+    el.editActions.hidden = true;
+  }
+
+  async function saveEdit() {
+    const content = el.noteEditor.value;
+    const resp = await fetch(`/api/notes/${encodeURIComponent(state.currentNote)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    }).catch(() => null);
+    if (!resp || !resp.ok) {
+      toast(
+        resp && resp.status === 409
+          ? "That note is still being recorded."
+          : "Could not save the note.",
+        "error"
+      );
+      return;
+    }
+    state.currentNoteMd = content;
+    exitEditMode();
+    renderNote(content);
+    refreshNotes(); // an edited H1 changes the sidebar title
+    toast("Saved.");
+  }
+
+  el.editBtn.addEventListener("click", enterEditMode);
+  el.cancelBtn.addEventListener("click", () => {
+    if (editorDirty() && !confirm("Discard your unsaved edits?")) return;
+    exitEditMode();
+  });
+  el.saveBtn.addEventListener("click", saveEdit);
+  el.copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(state.currentNoteMd || "");
+      toast("Copied as Markdown.");
+    } catch (err) {
+      toast("Could not copy to the clipboard.", "error");
+    }
+  });
 
   // ---------- transcript ----------
 
@@ -480,7 +659,10 @@
         break;
       case "saved":
         toast(`Saved “${evt.title}”`);
-        refreshNotes().then(() => openNote(evt.name));
+        // Don't steal the view (or pop a confirm) out from under an edit.
+        refreshNotes().then(() => {
+          if (!state.editing) openNote(evt.name);
+        });
         break;
       case "error":
         toast(evt.message, "error");

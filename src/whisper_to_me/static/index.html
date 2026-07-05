@@ -21,6 +21,9 @@
       <div class="sidebar-header">
         <span class="brand">whisper-to-me</span>
       </div>
+      <div class="sidebar-search">
+        <input id="search-input" type="search" placeholder="Search notes…" autocomplete="off">
+      </div>
       <ul id="notes-list" class="notes-list"></ul>
     </aside>
 
@@ -43,13 +46,28 @@
           <p>Select a note from the sidebar, or start a recording.</p>
         </div>
         <div id="transcript" class="transcript" hidden></div>
-        <article id="note-view" class="note-view" hidden></article>
+        <div id="note-container" class="note-container" hidden>
+          <div class="note-toolbar">
+            <span id="view-actions">
+              <button id="edit-btn" class="btn btn-ghost btn-sm">Edit</button>
+              <button id="copy-btn" class="btn btn-ghost btn-sm">Copy</button>
+            </span>
+            <span id="edit-actions" hidden>
+              <button id="save-btn" class="btn btn-primary btn-sm">Save</button>
+              <button id="cancel-btn" class="btn btn-ghost btn-sm">Cancel</button>
+            </span>
+          </div>
+          <article id="note-view" class="note-view"></article>
+          <textarea id="note-editor" class="note-editor" spellcheck="false" hidden></textarea>
+        </div>
       </div>
     </main>
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
+  <script src="/static/vendor/markdown-it.min.js"></script>
+  <script src="/static/vendor/markdown-it-task-lists.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
