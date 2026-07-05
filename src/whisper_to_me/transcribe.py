@@ -22,7 +22,13 @@ class Transcriber:
             cpu_threads=max(4, (os.cpu_count() or 8) // 2),
         )
 
-    def transcribe_chunk(self, audio: np.ndarray) -> str:
+    def transcribe_chunk(self, audio: np.ndarray) -> list[tuple[float, float, str]]:
+        """Transcribe one utterance chunk into (start_s, end_s, text) segments.
+
+        Offsets are relative to the chunk start, so callers can compute an
+        absolute time per segment and interleave multiple sources at sentence
+        granularity instead of whole-chunk granularity.
+        """
         segments, info = self.model.transcribe(
             audio,
             language=self.language,
@@ -30,12 +36,14 @@ class Transcriber:
             beam_size=5,
             condition_on_previous_text=False,
         )
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        timed = [
+            (seg.start, seg.end, seg.text.strip()) for seg in segments if seg.text.strip()
+        ]
         # Lock onto the first confidently-detected language so auto-detection
         # doesn't flap between languages chunk-to-chunk on accented speech.
-        if self.language is None and text and info.language_probability > 0.7:
+        if self.language is None and timed and info.language_probability > 0.7:
             self.language = info.language
-        return text
+        return timed
 
     def transcribe_file(self, path: str) -> list[tuple[float, str]]:
         """Transcribe an audio file; returns (start_seconds, text) lines."""

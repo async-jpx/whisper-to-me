@@ -4,7 +4,7 @@ workers, and the summarize-and-save step shared by `record` and `watch`."""
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -98,25 +98,27 @@ def record_session(
                 if item is None:
                     return
                 captured_at, chunk = item
-                duration = len(chunk) / audio.SAMPLE_RATE
-                text = transcriber.transcribe_chunk(chunk)
-                if not text:
-                    continue
-                # Live pass: skip a mic line that is already on screen as an
-                # "Others" line (speaker bleed). The final pass below also
-                # catches the reverse arrival order.
-                if (
-                    filter_echoes
-                    and speaker == dedup.ECHO_SPEAKER
-                    and dedup.matches_any(captured_at, duration, text, raw_lines)
-                ):
-                    suppressed += 1
-                    continue
-                stamp = str(captured_at - started).split(".")[0]
-                line = f"**{speaker}:** {text}" if label else text
-                raw_lines.append((captured_at, duration, speaker, text))
-                notes.append_line(live_path, stamp, line)
-                console.print(f"[dim][{stamp}][/dim] [bold]{speaker}:[/bold] {text}")
+                # Each Whisper segment (~a sentence) gets its own absolute
+                # time, so sources interleave at sentence granularity even
+                # when a chunk runs long.
+                for start_s, end_s, text in transcriber.transcribe_chunk(chunk):
+                    seg_at = captured_at + timedelta(seconds=start_s)
+                    duration = end_s - start_s
+                    # Live pass: skip a mic segment that is already on screen
+                    # as an "Others" segment (speaker bleed). The final pass
+                    # below also catches the reverse arrival order.
+                    if (
+                        filter_echoes
+                        and speaker == dedup.ECHO_SPEAKER
+                        and dedup.matches_any(seg_at, duration, text, raw_lines)
+                    ):
+                        suppressed += 1
+                        continue
+                    stamp = str(seg_at - started).split(".")[0]
+                    line = f"**{speaker}:** {text}" if label else text
+                    raw_lines.append((seg_at, duration, speaker, text))
+                    notes.append_line(live_path, stamp, line)
+                    console.print(f"[dim][{stamp}][/dim] [bold]{speaker}:[/bold] {text}")
 
         return threading.Thread(target=worker)
 
@@ -153,9 +155,36 @@ def record_session(
     raw_lines.sort(key=lambda line: line[0])
     transcript_lines = [
         (str(t - started).split(".")[0], f"**{speaker}:** {text}" if label else text)
-        for t, _dur, speaker, text in raw_lines
+        for t, speaker, text in _merge_turns(raw_lines)
     ]
     return transcript_lines, started
+
+
+# A new turn starts when the speaker changes or after this much silence —
+# keeps timestamps meaningful inside long monologues.
+TURN_GAP_SECONDS = 8.0
+
+
+def _merge_turns(
+    lines: list[dedup.Line],
+) -> list[tuple[datetime, str, str]]:
+    """Coalesce time-sorted segments into (start, speaker, text) turns."""
+    turns: list[tuple[datetime, str, str]] = []
+    turn_end: datetime | None = None
+    for t, dur, speaker, text in lines:
+        seg_end = t + timedelta(seconds=dur)
+        if (
+            turns
+            and turns[-1][1] == speaker
+            and (t - turn_end).total_seconds() <= TURN_GAP_SECONDS
+        ):
+            start, _, so_far = turns[-1]
+            turns[-1] = (start, speaker, f"{so_far} {text}")
+            turn_end = max(turn_end, seg_end)
+        else:
+            turns.append((t, speaker, text))
+            turn_end = seg_end
+    return turns
 
 
 def simulate_session(
