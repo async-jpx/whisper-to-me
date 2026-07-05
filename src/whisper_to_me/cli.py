@@ -50,36 +50,45 @@ def cmd_devices(_args) -> None:
     )
 
 
-def _finish(args, transcript_lines, started) -> None:
+def _finish(
+    args, transcript_lines, started, title: str, auto_title: bool | None = None
+) -> None:
+    if auto_title is None:
+        # No --title given: let the summarizer name the meeting.
+        auto_title = args.title is None
     summarize_and_save(
-        args.title,
+        title,
         transcript_lines,
         started,
         Path(args.notes_dir),
         ollama_model=args.ollama_model,
         context=args.context,
         no_summary=args.no_summary,
+        auto_title=auto_title,
     )
 
 
 def cmd_record(args) -> None:
+    title = args.title or f"Meeting {datetime.now():%d %b %H:%M}"
     transcriber = load_transcriber(args.model, args.language)
     console.print(
-        f"[bold green]● Recording[/bold green] '{args.title}' — speak away. "
+        f"[bold green]● Recording[/bold green] '{title}' — speak away. "
         "Press [bold]Ctrl-C[/bold] to stop and summarize.\n"
     )
     transcript_lines, started = record_session(
         transcriber,
-        args.title,
+        title,
         Path(args.notes_dir),
         device=args.device,
         system_device=args.system_device,
         keep_echoes=args.keep_echoes,
+        use_aec=not args.no_aec,
     )
-    _finish(args, transcript_lines, started)
+    _finish(args, transcript_lines, started, title)
 
 
 def cmd_simulate(args) -> None:
+    title = args.title or f"Simulation {datetime.now():%d %b %H:%M}"
     transcriber = load_transcriber(args.model, args.language)
     console.print(
         f"[bold green]▶ Simulating[/bold green] mic='{args.mic}'"
@@ -88,13 +97,14 @@ def cmd_simulate(args) -> None:
     )
     transcript_lines, started = simulate_session(
         transcriber,
-        args.title,
+        title,
         Path(args.notes_dir),
         args.mic,
         system_path=args.system,
         keep_echoes=args.keep_echoes,
+        use_aec=not args.no_aec,
     )
-    _finish(args, transcript_lines, started)
+    _finish(args, transcript_lines, started, title)
 
 
 def cmd_watch(args) -> None:
@@ -113,8 +123,13 @@ def cmd_watch(args) -> None:
                 time.sleep(args.poll)
                 continue
 
-            title = f"{'Zoom meeting' if trigger == 'zoom' else 'Meeting'} {datetime.now():%d %b %H:%M}"
-            args.title = title
+            # Title priority: --title > calendar event / Zoom window topic >
+            # placeholder that the summarizer replaces with an inferred title.
+            hint = watch.meeting_title_hint(trigger) if args.title is None else None
+            title = args.title or hint or (
+                f"{'Zoom meeting' if trigger == 'zoom' else 'Meeting'} "
+                f"{datetime.now():%d %b %H:%M}"
+            )
             watch.notify("whisper-to-me", f"Meeting detected — taking notes: {title}")
             console.print(
                 f"[bold green]● Meeting detected ({trigger})[/bold green] — recording '{title}'\n"
@@ -144,8 +159,17 @@ def cmd_watch(args) -> None:
                 system_device=args.system_device,
                 should_stop=should_stop,
                 keep_echoes=args.keep_echoes,
+                use_aec=not args.no_aec,
             )
-            _finish(args, transcript_lines, started)
+            # A real name from the calendar/Zoom wins; only infer when we
+            # fell back to the timestamp placeholder.
+            _finish(
+                args,
+                transcript_lines,
+                started,
+                title,
+                auto_title=args.title is None and hint is None,
+            )
             watch.notify("whisper-to-me", f"Notes saved for: {title}")
 
             # Wait until the trigger clears so we don't instantly re-record
@@ -158,6 +182,7 @@ def cmd_watch(args) -> None:
 
 
 def cmd_transcribe(args) -> None:
+    title = args.title or Path(args.file).stem
     transcriber = load_transcriber(args.model, args.language)
     with console.status(f"Transcribing {args.file}…"):
         segments = transcriber.transcribe_file(args.file)
@@ -166,7 +191,7 @@ def cmd_transcribe(args) -> None:
         stamp = f"{int(start // 3600)}:{int(start % 3600 // 60):02d}:{int(start % 60):02d}"
         lines.append((stamp, text))
         console.print(f"[dim][{stamp}][/dim] {text}")
-    _finish(args, lines, datetime.now())
+    _finish(args, lines, datetime.now(), title)
 
 
 def cmd_summarize(args) -> None:
@@ -175,12 +200,17 @@ def cmd_summarize(args) -> None:
         console.print(f"[red]Ollama model '{args.ollama_model}' unavailable.[/red]")
         sys.exit(1)
     with console.status(f"Summarizing with {args.ollama_model} (local)…"):
-        summary = summ.summarize(text, model=args.ollama_model, context=args.context)
+        summary, title = summ.summarize_meeting(
+            text, model=args.ollama_model, context=args.context
+        )
+    if title:
+        console.print(f"[bold]{title}[/bold]\n")
     console.print(summary)
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--title", default="Meeting", help="meeting title for the note")
+    p.add_argument("--title", default=None,
+                   help="meeting title for the note (default: inferred from the conversation)")
     p.add_argument("--model", default="large-v3-turbo",
                    help="Whisper model: large-v3-turbo (default, most accurate) / medium / small / tiny")
     p.add_argument("--system-device", default="auto",
@@ -203,6 +233,8 @@ def main() -> None:
     p_rec.add_argument("--device", type=int, default=None, help="input device index (see `wtm devices`)")
     p_rec.add_argument("--keep-echoes", action="store_true",
                        help="disable the filter that drops mic lines duplicating system audio")
+    p_rec.add_argument("--no-aec", action="store_true",
+                   help="disable acoustic echo cancellation of system audio from the mic")
     _add_common(p_rec)
     p_rec.set_defaults(func=cmd_record)
 
@@ -215,6 +247,8 @@ def main() -> None:
     )
     p_w.add_argument("--keep-echoes", action="store_true",
                      help="disable the filter that drops mic lines duplicating system audio")
+    p_w.add_argument("--no-aec", action="store_true",
+                   help="disable acoustic echo cancellation of system audio from the mic")
     _add_common(p_w)
     p_w.set_defaults(func=cmd_watch)
 
@@ -226,6 +260,8 @@ def main() -> None:
     p_sim.add_argument("--system", default=None, help="audio file replayed as system audio (Others)")
     p_sim.add_argument("--keep-echoes", action="store_true",
                        help="disable the filter that drops mic lines duplicating system audio")
+    p_sim.add_argument("--no-aec", action="store_true",
+                   help="disable acoustic echo cancellation of system audio from the mic")
     _add_common(p_sim)
     p_sim.set_defaults(func=cmd_simulate)
 

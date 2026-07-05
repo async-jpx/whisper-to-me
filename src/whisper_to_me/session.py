@@ -239,8 +239,10 @@ def summarize_and_save(
     ollama_model: str = summ.DEFAULT_MODEL,
     context: str = "",
     no_summary: bool = False,
+    auto_title: bool = False,
 ) -> Path:
     summary = None
+    inferred_title = None
     if not no_summary and transcript_lines:
         text = "\n".join(t for _, t in transcript_lines)
         if not summ.check_model(ollama_model):
@@ -251,11 +253,24 @@ def summarize_and_save(
         else:
             with console.status(f"Summarizing with {ollama_model} (local)…"):
                 try:
-                    summary = summ.summarize(text, model=ollama_model, context=context)
+                    summary, inferred_title = summ.summarize_meeting(
+                        text, model=ollama_model, context=context
+                    )
                 except summ.OllamaError as exc:
                     console.print(f"[red]{exc}[/red]")
 
-    path = notes.save_note(title, transcript_lines, summary, notes_dir, started)
+    final_title = title
+    if auto_title and inferred_title:
+        final_title = inferred_title
+        console.print(f"[dim]Inferred title:[/dim] [bold]{final_title}[/bold]")
+
+    path = notes.save_note(final_title, transcript_lines, summary, notes_dir, started)
+    # The live journal was created under the placeholder title; now that the
+    # final note is safely on disk, drop the stale copy. Never delete before
+    # the new file exists — a crash in between must leave one complete copy.
+    live_path = notes.note_path(title, started, notes_dir)
+    if live_path != path and live_path.exists():
+        live_path.unlink()
     console.print(f"\n[bold green]Note saved:[/bold green] {path}")
     if summary:
         console.rule("Summary")
