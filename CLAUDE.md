@@ -29,13 +29,18 @@ audio.py       Recorder (mic, 16kHz mono blocks -> energy-VAD utterance chunker,
 system_audio_tap.swift  ScreenCaptureKit helper: all-app system audio -> 16kHz
                mono f32 on stdout; compiled on demand to ~/.cache/whisper-to-me/
 transcribe.py  faster-whisper wrapper (large-v3-turbo int8, language lock-on)
-dedup.py       cross-source echo filter: drops "You" lines that duplicate a
-               time-overlapping "Others" line (speaker bleed into the mic)
-summarize.py   Ollama HTTP client, structured-notes prompt, map-reduce >40k chars
+dedup.py       cross-source echo filter: drops "You" segments that duplicate
+               an "Others" segment (speaker bleed into the mic)
+echo_cancel.py acoustic echo cancellation: system audio subtracted from the
+               mic signal (envelope+fine delay lock, FDAF NLMS, Geigel
+               double-talk freeze); text dedup stays on as backstop
+summarize.py   Ollama pipeline: windowed JSON fact extraction (structured
+               outputs) → Python fuzzy merge → synthesis note + title inference
 notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite
-watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process
+watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process;
+               title hints from Calendar.app / Zoom window (permission-gated)
 session.py     orchestration: sources ("You" mic / "Others" system), workers,
-               time-merged transcript, summarize_and_save
+               per-segment timestamps, turn-merged transcript, summarize_and_save
 cli.py         thin argparse wiring only — keep logic out of here
 ```
 
@@ -45,7 +50,9 @@ Key invariants:
 - Speaker labels (`**You:**` / `**Others:**`) only when >1 source is active.
 - `notes.note_path(title, started)` is deterministic — the live journal and the
   final `save_note` rewrite target the same file. A crash mid-meeting must
-  never lose transcript lines.
+  never lose transcript lines. With an auto-inferred title the final note gets
+  a new path; `summarize_and_save` deletes the placeholder journal only *after*
+  the final note is written, so one complete copy always exists.
 
 ## Testing (important etiquette)
 
@@ -91,6 +98,16 @@ Key invariants:
   language lock-on (auto-detect flaps between languages on accented speech).
 - Energy gate `SILENCE_RMS = 0.004` is deliberately permissive — Whisper's own
   VAD rejects noise downstream. Don't "fix" it upward without a listening test.
+- **Echo filter must stay onset-aligned** (dedup.py): a genuine quick reply
+  often reuses the other speaker's words ("Yes, it moved to Friday" right
+  after "I think it was moved to Friday") and *will* fuzzy-match. Only a
+  near-simultaneous start (~±1.5 s) may use the loose match; anything later
+  needs a near-exact one. Loosening this deletes the user's own words.
+- **FDAF adaptation must use the true error** (echo_cancel.py): adapt on
+  `block − y_hat`, never on the protected output — adapting on the substituted
+  signal keeps adding a full step to already-wrong weights and the filter
+  diverges permanently. Likewise normalize by `|X|² + 1% mean bin power`; a
+  bare 1e-8 epsilon lets near-empty bins blow the filter up.
 
 ## Conventions
 

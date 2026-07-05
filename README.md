@@ -38,6 +38,11 @@ Useful flags: `--model small|medium|large-v3` (Whisper size), `--language en`,
 `--ollama-model NAME`, `--context "attendees, agenda hints"`, `--no-summary`,
 `--notes-dir PATH`, and `--device N` for `record`.
 
+Notes are titled automatically: an explicit `--title` wins; `watch` then tries
+the current Calendar.app event or the Zoom window topic (local, permission
+gated); otherwise a title is inferred from the conversation by the local
+summarizer, and the note file is renamed to match.
+
 First run downloads the Whisper model once; everything afterwards is offline.
 macOS will ask for microphone permission for your terminal on first recording.
 
@@ -59,15 +64,19 @@ headphones. Lines from both sources are merged by time.
   (BlackHole etc.) are used as fallback.
 - Transcript lines are journaled to the note file *as they are spoken*, so a
   crash or kill never loses the transcript; the summary is added at the end.
-- If audio plays through speakers (no headphones), the mic hears it too. An
-  echo filter drops mic lines that duplicate a time-overlapping system-audio
-  line, so remote speech doesn't reappear under **You**; disable it with
-  `--keep-echoes`.
+- If audio plays through speakers (no headphones), the mic hears it too.
+  Two layers keep remote speech out of **You**: acoustic echo cancellation
+  subtracts the system signal from the mic (the tap is a perfect reference
+  for what the speakers play; `--no-aec` disables), and a text-level filter
+  drops any residual duplicated lines (`--keep-echoes` disables).
 
 ## Performance notes
 
 Summarization context is capped (`num_ctx=16384`) — without a cap Ollama uses
 the model's maximum context, which can balloon the KV cache to tens of GB and
-swap the machine. Long meetings are summarized map-reduce style in ~40k-char
-windows. Prefer small summarizer models (3–8 B); meeting-note quality does not
-need a 24 B coding model.
+swap the machine. Summarization runs as a pipeline: the transcript is split
+into overlapping ~24k-char windows, each window goes through structured JSON
+fact extraction (decisions, action items, risks, open questions), the facts
+are merged in Python, and one final call writes the note — so depth doesn't
+degrade with meeting length. Prefer small summarizer models (3–8 B);
+meeting-note quality does not need a 24 B coding model.
