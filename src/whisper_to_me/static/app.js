@@ -431,7 +431,21 @@
       handleEvent(evt);
     });
 
-    ws.addEventListener("close", scheduleReconnect);
+    ws.addEventListener("close", async () => {
+      // A dropped socket with a live daemon just reconnects; a dead daemon
+      // sends the page back to the boot loop so the retry card shows instead
+      // of a stale session bar.
+      try {
+        await fetchStatus();
+      } catch (err) {
+        state.daemonUp = false;
+        el.daemonDown.hidden = false;
+        el.app.hidden = true;
+        setTimeout(boot, 2000);
+        return;
+      }
+      scheduleReconnect();
+    });
     ws.addEventListener("error", () => ws.close());
   }
 

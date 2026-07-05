@@ -109,6 +109,21 @@ Key invariants:
   diverges permanently. Likewise normalize by `|X|² + 1% mean bin power`; a
   bare 1e-8 epsilon lets near-empty bins blow the filter up.
 
+## Definition of done (check before claiming a change works)
+
+1. `uv run ruff check src/` is clean.
+2. The changed path was exercised behaviorally, mic-free (see Testing):
+   transcription/pipeline → `wtm transcribe` on a `say`-generated wav;
+   multi-source/dedup/echo → `wtm simulate --mic ... --system ...`;
+   summarization → `wtm summarize` on an existing transcript.
+3. Diff re-checked against **Key invariants** and every **Sharp edge**
+   naming a module you touched — those sections exist because plausible
+   "fixes" broke them before.
+4. Privacy audit of the diff: no network calls, no cloud APIs, no telemetry.
+   Anything leaving the machine is an automatic reject.
+5. Anything unverified (e.g. needs real mic/meeting audio, TCC permission,
+   or a machine restart) is reported as unverified, not assumed working.
+
 ## Conventions
 
 - Python 3.12, type hints, module docstrings; ruff clean.

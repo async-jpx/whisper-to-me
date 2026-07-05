@@ -49,6 +49,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* The hidden attribute is the JS visibility toggle for whole views
+   (daemon-down/app, empty/transcript/note). Any rule that sets display
+   on those elements silently defeats it, so it must always win. */
+[hidden] {
+  display: none !important;
+}
+
 /* ---------- daemon-down state ---------- */
 
 .daemon-down {
