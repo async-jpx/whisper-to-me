@@ -17,6 +17,61 @@ console = Console()
 
 StopCondition = Callable[[list[audio.Recorder]], bool]
 
+# An event sink is just a callable taking one JSON-able dict — status changes,
+# transcript lines, echo-filter counts, summarizing/saved/error notices. Both
+# `record_session` and `summarize_and_save` emit through one, so a UI daemon
+# (server.py) can subscribe by passing its own sink; the CLI keeps working
+# unchanged because the default sink reproduces today's console output.
+EventSink = Callable[[dict], None]
+
+
+class ConsoleSink:
+    """Default sink: prints exactly what this module printed before events
+    existed. Stateful only to keep the "Summarizing…" spinner going between
+    the `summarizing` event and the `saved`/`error` that ends it."""
+
+    def __init__(self) -> None:
+        self._status = None
+
+    def _stop_status(self) -> None:
+        if self._status is not None:
+            self._status.stop()
+            self._status = None
+
+    def __call__(self, event: dict) -> None:
+        etype = event["type"]
+        if etype == "status":
+            return  # cmd_record/cmd_watch already announce their own start
+        if etype == "line":
+            console.print(
+                f"[dim][{event['stamp']}][/dim] [bold]{event['speaker']}:[/bold] {event['text']}"
+            )
+        elif etype == "echoes_dropped":
+            console.print(
+                f"[dim]Echo filter: removed {event['count']} mic line(s) that were "
+                "the speakers bleeding into the microphone.[/dim]"
+            )
+        elif etype == "summarizing":
+            self._stop_status()
+            self._status = console.status(f"Summarizing with {event['model']} (local)…")
+            self._status.start()
+        elif etype == "saved":
+            self._stop_status()
+            console.print(f"\n[bold green]Note saved:[/bold green] {event['path']}")
+            if event.get("summary"):
+                console.rule("Summary")
+                console.print(event["summary"])
+        elif etype == "error":
+            self._stop_status()
+            console.print(f"[red]{event['message']}[/red]")
+
+
+_console_sink = ConsoleSink()
+
+
+def resolve_sink(events: EventSink | None) -> EventSink:
+    return events if events is not None else _console_sink
+
 
 def load_transcriber(model: str, language: str | None):
     from .transcribe import Transcriber  # deferred: heavy import
@@ -71,12 +126,16 @@ def record_session(
     started: datetime | None = None,
     keep_echoes: bool = False,
     use_aec: bool = True,
+    events: EventSink | None = None,
+    stop_event: threading.Event | None = None,
 ) -> tuple[list[tuple[str, str]], datetime]:
-    """Record (mic + system audio) until Ctrl-C or should_stop(recorders).
+    """Record (mic + system audio) until Ctrl-C, should_stop(recorders), or
+    stop_event.is_set() — whichever comes first.
 
     Returns (transcript_lines, started); lines are (stamp, text) sorted by
     capture time, with speaker labels when there is more than one source.
     """
+    sink = resolve_sink(events)
     if sources is None:
         sources = [("You", audio.Recorder(device=device))]
         sources += _system_audio_sources(system_device)
@@ -94,6 +153,7 @@ def record_session(
         sources[0][1].preprocess = canceller.process
 
     started = started or datetime.now()
+    sink({"type": "status", "state": "recording", "title": title, "started": started.isoformat()})
     raw_lines: list[dedup.Line] = []  # (capture_time, duration_s, speaker, text)
     suppressed = 0  # echoes caught live, before they hit the journal
     label = len(sources) > 1
@@ -131,7 +191,7 @@ def record_session(
                     line = f"**{speaker}:** {text}" if label else text
                     raw_lines.append((seg_at, duration, speaker, text))
                     notes.append_line(live_path, stamp, line)
-                    console.print(f"[dim][{stamp}][/dim] [bold]{speaker}:[/bold] {text}")
+                    sink({"type": "line", "stamp": stamp, "speaker": speaker, "text": text})
 
         return threading.Thread(target=worker)
 
@@ -147,6 +207,8 @@ def record_session(
             workers[0].join(timeout=0.5)
             if should_stop is not None and should_stop(recorders):
                 break
+            if stop_event is not None and stop_event.is_set():
+                break
     except KeyboardInterrupt:
         pass
     console.print("\n[yellow]Stopping… transcribing remaining audio.[/yellow]")
@@ -159,10 +221,7 @@ def record_session(
         kept = dedup.drop_echoes(raw_lines)
         dropped = suppressed + len(raw_lines) - len(kept)
         if dropped:
-            console.print(
-                f"[dim]Echo filter: removed {dropped} mic line(s) that were "
-                "the speakers bleeding into the microphone.[/dim]"
-            )
+            sink({"type": "echoes_dropped", "count": dropped})
         raw_lines = kept
 
     raw_lines.sort(key=lambda line: line[0])
@@ -208,6 +267,7 @@ def simulate_session(
     system_path: str | None = None,
     keep_echoes: bool = False,
     use_aec: bool = True,
+    events: EventSink | None = None,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Replay audio files through the live pipeline — chunking, transcription,
     echo filtering, merging — with no audio devices. The regression-test path:
@@ -226,6 +286,7 @@ def simulate_session(
         sources=sources,
         started=epoch,
         keep_echoes=keep_echoes,
+        events=events,
         use_aec=use_aec,
         should_stop=lambda recorders: all(r.finished for r in recorders),
     )
@@ -240,24 +301,27 @@ def summarize_and_save(
     context: str = "",
     no_summary: bool = False,
     auto_title: bool = False,
+    events: EventSink | None = None,
 ) -> Path:
+    sink = resolve_sink(events)
     summary = None
     inferred_title = None
     if not no_summary and transcript_lines:
         text = "\n".join(t for _, t in transcript_lines)
         if not summ.check_model(ollama_model):
-            console.print(
-                f"[yellow]Ollama model '{ollama_model}' unavailable — "
-                "saving transcript without summary.[/yellow]"
-            )
+            sink({
+                "type": "error",
+                "message": f"Ollama model '{ollama_model}' unavailable — "
+                "saving transcript without summary.",
+            })
         else:
-            with console.status(f"Summarizing with {ollama_model} (local)…"):
-                try:
-                    summary, inferred_title = summ.summarize_meeting(
-                        text, model=ollama_model, context=context
-                    )
-                except summ.OllamaError as exc:
-                    console.print(f"[red]{exc}[/red]")
+            sink({"type": "summarizing", "model": ollama_model})
+            try:
+                summary, inferred_title = summ.summarize_meeting(
+                    text, model=ollama_model, context=context
+                )
+            except summ.OllamaError as exc:
+                sink({"type": "error", "message": str(exc)})
 
     final_title = title
     if auto_title and inferred_title:
@@ -271,8 +335,15 @@ def summarize_and_save(
     live_path = notes.note_path(title, started, notes_dir)
     if live_path != path and live_path.exists():
         live_path.unlink()
-    console.print(f"\n[bold green]Note saved:[/bold green] {path}")
-    if summary:
-        console.rule("Summary")
-        console.print(summary)
+    # "summary" here is CLI-only sugar for ConsoleSink's rule+body print; a
+    # wire sink (server.py) strips it before broadcasting — the "saved" event
+    # contract is just path/title/name, and a UI fetches the note body via
+    # GET /api/notes/{name} instead of duplicating it over the socket.
+    sink({
+        "type": "saved",
+        "path": str(path),
+        "title": final_title,
+        "name": path.name,
+        "summary": summary,
+    })
     return path
