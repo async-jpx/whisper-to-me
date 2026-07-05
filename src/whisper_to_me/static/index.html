@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>whisper-to-me</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="daemon-down" class="daemon-down" hidden>
+    <div class="daemon-down-card">
+      <h1>whisper-to-me</h1>
+      <p>Can't reach the local daemon.</p>
+      <p class="hint">Start it with <code>wtm ui</code>, then this page will pick up automatically.</p>
+      <p class="retrying">Retrying&hellip;</p>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="brand">whisper-to-me</span>
+      </div>
+      <ul id="notes-list" class="notes-list"></ul>
+    </aside>
+
+    <main class="main">
+      <div class="session-bar">
+        <div class="status">
+          <span id="status-dot" class="status-dot status-idle"></span>
+          <span id="status-text" class="status-text">Ready</span>
+          <span id="elapsed" class="elapsed"></span>
+        </div>
+        <div class="controls">
+          <input id="title-input" type="text" class="title-input" placeholder="Meeting title (optional)" maxlength="120">
+          <button id="watch-btn" class="btn btn-ghost">Watch</button>
+          <button id="record-btn" class="btn btn-primary">Record</button>
+        </div>
+      </div>
+
+      <div id="content" class="content">
+        <div id="empty-state" class="empty-state">
+          <p>Select a note from the sidebar, or start a recording.</p>
+        </div>
+        <div id="transcript" class="transcript" hidden></div>
+        <article id="note-view" class="note-view" hidden></article>
+      </div>
+    </main>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
