@@ -8,6 +8,13 @@ from pathlib import Path
 
 DEFAULT_NOTES_DIR = Path.home() / "MeetingNotes"
 
+# Must mirror what markdown-it-task-lists (the UI renderer) treats as a task
+# item — any list item whose content starts with "[ ] "/"[x] "/"[X] " — so the
+# UI's nth checkbox and toggle_task's nth match are the same line. (A literal
+# "- [ ]" inside a fenced code block would skew the count; generated notes
+# never contain fences.)
+_TASK_RE = re.compile(r"^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\] )")
+
 
 def _slug(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
@@ -16,6 +23,44 @@ def _slug(title: str) -> str:
 
 def note_path(title: str, started: datetime, notes_dir: Path = DEFAULT_NOTES_DIR) -> Path:
     return notes_dir / f"{started:%Y-%m-%d-%H%M}-{_slug(title)}.md"
+
+
+def note_title(path: Path) -> str:
+    """The note's H1 title, falling back to the filename stem."""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("# "):
+                    return line[2:].strip()
+    except OSError:
+        pass
+    return path.stem
+
+
+def write_note_text(path: Path, content: str) -> None:
+    """Replace a note's content atomically — a crash mid-write must never
+    leave a half-written note (same promise the live journal makes)."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
+def toggle_task(path: Path, index: int, checked: bool) -> bool:
+    """Set the checked state of the index-th (0-based) `- [ ]` task item.
+    Returns False when the note has fewer task items than that."""
+    lines = path.read_text(encoding="utf-8").split("\n")
+    seen = 0
+    for i, line in enumerate(lines):
+        if not _TASK_RE.match(line):
+            continue
+        if seen == index:
+            mark = "x" if checked else " "
+            lines[i] = _TASK_RE.sub(lambda m: f"{m.group(1)}{mark}{m.group(3)}", line, count=1)
+            write_note_text(path, "\n".join(lines))
+            return True
+        seen += 1
+    return False
 
 
 def start_live_note(title: str, started: datetime, notes_dir: Path = DEFAULT_NOTES_DIR) -> Path:

@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import notes
+from . import notes, search
 from . import summarize as summ
 from .runner import WatchOptions, watch_loop
 from .session import load_transcriber, record_session, simulate_session, summarize_and_save
@@ -101,6 +101,15 @@ class SessionManager:
         if self._transcriber is None:
             self._transcriber = load_transcriber(self.opts.model, self.opts.language)
         return self._transcriber
+
+    def live_note_name(self) -> str | None:
+        """Filename of the live journal while a session is writing it — the
+        one note the edit endpoints must never touch (see notes.py invariant:
+        the journal and the final rewrite target the same path)."""
+        with self._lock:
+            if self.state == "idle" or not self.title or not self.started:
+                return None
+            return notes.note_path(self.title, self.started, self.opts.notes_dir).name
 
     def status(self) -> dict:
         elapsed = (
@@ -317,6 +326,15 @@ class RecordStartBody(BaseModel):
     title: str | None = None
 
 
+class NoteContentBody(BaseModel):
+    content: str
+
+
+class TaskToggleBody(BaseModel):
+    task_index: int
+    checked: bool
+
+
 class SimulateBody(BaseModel):
     mic: str
     system: str | None = None
@@ -329,7 +347,7 @@ def _list_notes(notes_dir: Path) -> list[dict]:
     entries = [
         {
             "name": path.name,
-            "title": _note_title(path),
+            "title": notes.note_title(path),
             "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
         }
         for path in notes_dir.glob("*.md")
@@ -338,21 +356,14 @@ def _list_notes(notes_dir: Path) -> list[dict]:
     return entries
 
 
-def _note_title(path: Path) -> str:
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line.startswith("# "):
-                    return line[2:].strip()
-    except OSError:
-        pass
-    return path.stem
-
-
 def _safe_note_path(notes_dir: Path, name: str) -> Path | None:
     """Resolve `name` under notes_dir and reject anything that escapes it —
-    guards GET /api/notes/{name} against path traversal."""
+    guards the /api/notes/{name} endpoints against path traversal. Only
+    `.md` files qualify: everything else in the directory (the search index,
+    editor temp files) is not a note and must stay unreachable, especially
+    from the write endpoints."""
+    if not name.endswith(".md"):
+        return None
     base = notes_dir.resolve()
     candidate = (base / name).resolve()
     try:
@@ -365,6 +376,7 @@ def _safe_note_path(notes_dir: Path, name: str) -> Path | None:
 def create_app(opts: ServerOptions) -> FastAPI:
     app = FastAPI()
     manager = SessionManager(opts)
+    app.state.manager = manager  # tests reach the session state through here
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -437,6 +449,34 @@ def create_app(opts: ServerOptions) -> FastAPI:
         if path is None or not path.is_file():
             raise HTTPException(status_code=404, detail="note not found")
         return PlainTextResponse(path.read_text(encoding="utf-8"), media_type="text/markdown")
+
+    def _writable_note_path(name: str) -> Path:
+        """Shared guard for the write endpoints: must exist, must not escape
+        the notes dir, must not be the live session's journal (a concurrent
+        rewrite there would race append_line/save_note and lose lines)."""
+        path = _safe_note_path(opts.notes_dir, name)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="note not found")
+        if name == manager.live_note_name():
+            raise HTTPException(status_code=409, detail="note is being recorded")
+        return path
+
+    @app.put("/api/notes/{name}")
+    def put_note(name: str, body: NoteContentBody):
+        path = _writable_note_path(name)
+        notes.write_note_text(path, body.content)
+        return {"ok": True, "title": notes.note_title(path)}
+
+    @app.patch("/api/notes/{name}")
+    def patch_note(name: str, body: TaskToggleBody):
+        path = _writable_note_path(name)
+        if body.task_index < 0 or not notes.toggle_task(path, body.task_index, body.checked):
+            raise HTTPException(status_code=400, detail="no such task item")
+        return {"ok": True}
+
+    @app.get("/api/search")
+    def search_endpoint(q: str = ""):
+        return search.search_notes(opts.notes_dir, q)
 
     @app.websocket("/api/events")
     async def events_ws(ws: WebSocket) -> None:
