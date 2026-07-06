@@ -79,12 +79,15 @@ Architecture: Tauri shell → spawns the existing Python daemon as a
 loads `http://127.0.0.1:8737`. The daemon stays the single source of truth;
 the CLI keeps working unchanged.
 
-1. Tauri scaffold + sidecar lifecycle (spawn on launch, health-check, kill on
-   quit; handle port-in-use = daemon already running).
-2. **Menu-bar (tray) presence** — the daily-driver feature: recording status
-   dot, Start/Stop, "Open last note", pause. `watch` mode makes this a true
-   Granola-style "it just captures my meetings" experience.
-3. Native notifications: "Meeting detected — recording", "Note saved: *Title*".
+1. ✅ Tauri scaffold + sidecar lifecycle (spawn on launch, health-check,
+   SIGTERM on quit; port-in-use = daemon already running → attach, never kill).
+2. ✅ **Menu-bar (tray) presence** — status line + elapsed-time title,
+   Start/Stop record, Start/Stop watch, "Open last note" (deep-links via
+   `#note=` hash), Open window, Quit. (No pause — the daemon has no pause
+   endpoint yet.)
+3. ✅ Native notifications: "Meeting detected — recording", "Note saved:
+   *Title*", daemon errors. (Banner visibility for the unbundled dev binary
+   depends on macOS notification permission; re-check once bundled/signed.)
 4. Login item (launch at startup, start in `watch` mode), dock-less mode.
 5. Packaging: signed + notarized `.app`, DMG. TCC permissions (mic, system
    audio) get prompted for the *app bundle* — document the migration; this

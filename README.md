@@ -70,6 +70,34 @@ headphones. Lines from both sources are merged by time.
   for what the speakers play; `--no-aec` disables), and a text-level filter
   drops any residual duplicated lines (`--keep-echoes` disables).
 
+## Web UI and desktop app
+
+`uv run wtm ui` starts a local daemon (FastAPI, loopback only) and opens the
+web UI: live transcript, searchable and editable notes, one-click record/watch.
+
+There is also a menu-bar desktop app (Tauri) wrapping the same daemon:
+
+```sh
+cd desktop
+npm install            # Tauri CLI (once)
+python3 gen_icons.py && npx tauri icon app-icon.png   # icons (once)
+npx tauri dev          # or: cargo build --manifest-path src-tauri/Cargo.toml
+```
+
+It spawns `wtm serve` as a sidecar (or attaches to one already running),
+shows recording status and elapsed time in the menu bar with Start/Stop /
+"Open last note" controls, and posts notifications when a meeting is detected
+or a note is saved. Quitting sends the daemon a SIGTERM, which saves and
+summarizes like Ctrl-C. `WTM_PORT` / `WTM_BIN` override the daemon port and
+binary for development.
+
+For notifications with the app's own name and icon, run the bundled build —
+macOS attributes notifications from a bare dev binary to your terminal app:
+
+```sh
+npx tauri build --bundles app   # → src-tauri/target/release/bundle/macos/whisper-to-me.app
+```
+
 ## Performance notes
 
 Summarization context is capped (`num_ctx=16384`) — without a cap Ollama uses

@@ -15,10 +15,23 @@ uv run wtm watch            # auto-detect meetings, Notion-style
 uv run wtm transcribe F     # audio file -> note
 uv run wtm summarize F      # re-summarize a transcript
 uv run wtm simulate --mic F [--system F]  # replay files through the live pipeline (no devices)
+uv run wtm serve / wtm ui   # local daemon (127.0.0.1:8737) / + open web UI
 uv run ruff check src/     # lint (also runs via hook on edits)
+uv run pytest tests/       # unit + API tests
 ```
 
-No test suite yet — verification is behavioral (see Testing below).
+Desktop app (Tauri menu-bar shell, `desktop/`):
+
+```sh
+cd desktop && npm install                          # Tauri CLI (once)
+python3 gen_icons.py && npx tauri icon app-icon.png  # regenerate icons
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"   # cargo lives here (brew rustup)
+cargo build --manifest-path src-tauri/Cargo.toml
+WTM_PORT=8747 src-tauri/target/debug/whisper-to-me-desktop  # dev run on a scratch port
+```
+
+Audio/pipeline verification is behavioral (see Testing below); `tests/` covers
+notes/search/API.
 
 ## Architecture
 
@@ -41,7 +54,15 @@ watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process;
                title hints from Calendar.app / Zoom window (permission-gated)
 session.py     orchestration: sources ("You" mic / "Others" system), workers,
                per-segment timestamps, turn-merged transcript, summarize_and_save
+runner.py      watch_loop: meeting-detection loop shared by CLI and daemon
+server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
+               fan-out; single SessionManager owns the one active session
+search.py      SQLite FTS5 index over notes for GET /api/search
+static/        vendored web UI (no CDN); app.js supports #note=<name> deep links
 cli.py         thin argparse wiring only — keep logic out of here
+desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
+               (or attaches to a running daemon and never kills it), webview →
+               http://127.0.0.1:8737, tray mirrors /api/events, notifications
 ```
 
 Key invariants:
@@ -75,6 +96,16 @@ Key invariants:
   SIGINT the `uv run` wrapper; uv doesn't forward it reliably.
 - If you temporarily change system volume for a test, restore it (and mute
   state) afterwards.
+- Desktop shell, mic-free: run it with `WTM_PORT=8747` so it spawns its own
+  daemon instead of grabbing (or later killing) one the user left running on
+  8737. The tray is scriptable without screenshots via accessibility — the
+  status item is `menu bar 2` of the process: `osascript -e 'tell application
+  "System Events" to get name of every menu item of menu 1 of menu bar item 1
+  of menu bar 2 of (first process whose name contains "whisper-to-me")'`
+  (also `enabled of …`, `click menu item "Quit" of …`, and the elapsed-time
+  text via `value of attribute "AXTitle" of menu bar item 1`). Drive sessions
+  with `POST /api/simulate {"mic": ..., "no_summary": true}` and quit through
+  the tray so the SIGTERM cleanup path runs.
 
 ## Sharp edges (each cost real debugging time)
 
@@ -103,6 +134,17 @@ Key invariants:
   after "I think it was moved to Friday") and *will* fuzzy-match. Only a
   near-simultaneous start (~±1.5 s) may use the loose match; anything later
   needs a near-exact one. Loosening this deletes the user's own words.
+- **Tray `set_title(None)` does not clear the title on macOS** (desktop
+  tray.rs): after "summarizing" set the title to `Some("")`, or the "…" sticks
+  in the menu bar forever. Verified the hard way; keep the always-`Some` form.
+- **Notifications carry the app's identity only from a bundled build**: the
+  bare `target/debug` binary's notifications are attributed to the terminal
+  app (name + icon). Test identity with `npx tauri build --bundles app` and
+  run the executable inside the produced `.app`.
+- **Never SIGKILL the spawned daemon** (desktop daemon.rs): on quit it gets
+  SIGTERM (= save + summarize, like Ctrl-C) and a 5 s grace; if still busy it
+  is *left running* to finish the note. Also: a daemon that was already
+  running on the port is not ours — attach, never kill.
 - **FDAF adaptation must use the true error** (echo_cancel.py): adapt on
   `block − y_hat`, never on the protected output — adapting on the substituted
   signal keeps adding a full step to already-wrong weights and the filter
