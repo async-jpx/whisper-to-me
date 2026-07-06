@@ -21,6 +21,33 @@ def _slug(title: str) -> str:
     return slug or "meeting"
 
 
+def _yaml_str(value: str) -> str:
+    """Double-quoted YAML scalar — titles and names may contain anything."""
+    return '"{}"'.format(value.replace("\\", "\\\\").replace('"', '\\"'))
+
+
+def frontmatter(title: str, started: datetime, attendees: list[str] | None = None) -> str:
+    """Obsidian-friendly YAML frontmatter block (with trailing newline)."""
+    lines = [
+        "---",
+        f"title: {_yaml_str(title)}",
+        f"date: {started:%Y-%m-%dT%H:%M}",
+    ]
+    if attendees:
+        lines.append("attendees: [{}]".format(", ".join(_yaml_str(a) for a in attendees)))
+    lines += ["tags: [meeting]", "source: whisper-to-me", "---", ""]
+    return "\n".join(lines)
+
+
+def split_frontmatter(text: str) -> tuple[str | None, str]:
+    """(frontmatter block or None, body) — tolerant of notes without one."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[: end + 5], text[end + 5 :].lstrip("\n")
+    return None, text
+
+
 def note_path(title: str, started: datetime, notes_dir: Path = DEFAULT_NOTES_DIR) -> Path:
     return notes_dir / f"{started:%Y-%m-%d-%H%M}-{_slug(title)}.md"
 
@@ -87,13 +114,20 @@ def save_note(
     summary: str | None,
     notes_dir: Path = DEFAULT_NOTES_DIR,
     started: datetime | None = None,
+    attendees: list[str] | None = None,
 ) -> Path:
-    """Write a meeting note (summary + timestamped transcript) and return its path."""
+    """Write a meeting note (frontmatter + summary + timestamped transcript)
+    and return its path."""
     started = started or datetime.now()
     notes_dir.mkdir(parents=True, exist_ok=True)
     path = note_path(title, started, notes_dir)
 
-    body = [f"# {title}", "", f"*Recorded {started:%A %d %B %Y, %H:%M} — whisper-to-me*", ""]
+    body = [
+        frontmatter(title, started, attendees) + f"# {title}",
+        "",
+        f"*Recorded {started:%A %d %B %Y, %H:%M} — whisper-to-me*",
+        "",
+    ]
     if summary:
         body += [summary, "", "---", ""]
     body += ["## Transcript", ""]

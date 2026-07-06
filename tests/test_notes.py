@@ -87,3 +87,41 @@ def test_write_note_text_replaces_and_cleans_up(tmp_path):
     notes.write_note_text(path, "# New\n")
     assert path.read_text(encoding="utf-8") == "# New\n"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_note_writes_frontmatter(tmp_path):
+    from datetime import datetime
+
+    path = notes.save_note(
+        "Sprint Planning",
+        [("0:00:03", "hello there")],
+        "## TL;DR\nShort.",
+        tmp_path,
+        started=datetime(2026, 7, 2, 15, 18),
+        attendees=["Dana", "Sam"],
+    )
+    text = path.read_text(encoding="utf-8")
+    fm, body = notes.split_frontmatter(text)
+    assert fm == (
+        "---\n"
+        'title: "Sprint Planning"\n'
+        "date: 2026-07-02T15:18\n"
+        'attendees: ["Dana", "Sam"]\n'
+        "tags: [meeting]\n"
+        "source: whisper-to-me\n"
+        "---\n"
+    )
+    assert body.startswith("# Sprint Planning\n")
+    assert notes.note_title(path) == "Sprint Planning"  # still read from the H1
+
+
+def test_frontmatter_escapes_quotes():
+    from datetime import datetime
+
+    fm = notes.frontmatter('He said "hi" \\ bye', datetime(2026, 7, 2, 15, 18))
+    assert 'title: "He said \\"hi\\" \\\\ bye"' in fm
+
+
+def test_split_frontmatter_tolerates_absence():
+    assert notes.split_frontmatter("# Plain\n") == (None, "# Plain\n")
+    assert notes.split_frontmatter("---\nnever closed\n") == (None, "---\nnever closed\n")
