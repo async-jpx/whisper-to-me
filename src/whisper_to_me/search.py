@@ -46,8 +46,10 @@ def _connect(notes_dir: Path) -> sqlite3.Connection:
 
 
 def _plain(md: str) -> str:
-    """Markdown → indexable text: drop heading/emphasis markers so snippets
-    read as prose instead of `**[0:03:12]** **You:** …` soup."""
+    """Markdown → indexable text: drop the frontmatter (its boilerplate keys
+    would match every note) and heading/emphasis markers so snippets read as
+    prose instead of `**[0:03:12]** **You:** …` soup."""
+    _, md = notes.split_frontmatter(md)
     text = re.sub(r"^#{1,6}\s+", "", md, flags=re.MULTILINE)
     return text.replace("*", "")
 
@@ -79,16 +81,21 @@ def _sync(db: sqlite3.Connection, notes_dir: Path) -> None:
     db.commit()
 
 
-def _match_expr(query: str) -> str:
-    """Every term quoted (user input is never FTS syntax), implicit AND,
-    trailing term prefix-matched so search-as-you-type works."""
+def _match_expr(query: str, match_all: bool = True) -> str:
+    """Every term quoted (user input is never FTS syntax), trailing term
+    prefix-matched so search-as-you-type works. `match_all` (the sidebar
+    default) ANDs the terms; match_all=False ORs them, which is what chat
+    retrieval wants — a natural-language question shouldn't require every word
+    to appear, just the salient ones to rank a note up."""
     terms = ['"{}"'.format(t.replace('"', '""')) for t in query.split()]
     if terms:
         terms[-1] += "*"
-    return " ".join(terms)
+    return (" " if match_all else " OR ").join(terms)
 
 
-def search_notes(notes_dir: Path, query: str, limit: int = 20) -> list[dict]:
+def search_notes(
+    notes_dir: Path, query: str, limit: int = 20, match_all: bool = True
+) -> list[dict]:
     """Ranked matches: [{name, title, modified, snippet}] — snippet hits are
     bracketed by HL_OPEN/HL_CLOSE."""
     query = query.strip()
@@ -100,7 +107,7 @@ def search_notes(notes_dir: Path, query: str, limit: int = 20) -> list[dict]:
         rows = db.execute(
             "SELECT name, title, snippet(notes_fts, 2, ?, ?, ' … ', 14) "
             "FROM notes_fts WHERE notes_fts MATCH ? ORDER BY rank LIMIT ?",
-            (HL_OPEN, HL_CLOSE, _match_expr(query), limit),
+            (HL_OPEN, HL_CLOSE, _match_expr(query, match_all), limit),
         ).fetchall()
     except sqlite3.OperationalError:
         return []  # defensive: a MATCH expr sqlite still dislikes ≠ a 500

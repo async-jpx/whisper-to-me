@@ -4,13 +4,15 @@ record/summarize cycle either way."""
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
-from . import audio, watch
+from . import audio, briefs, templates, watch
 from .session import EventSink, console, record_session, resolve_sink, summarize_and_save
 
 
@@ -27,6 +29,8 @@ class WatchOptions:
     ollama_model: str
     context: str
     no_summary: bool
+    template: str | None = None
+    diarize: bool = False
 
 
 def watch_loop(
@@ -34,9 +38,15 @@ def watch_loop(
     opts: WatchOptions,
     events: EventSink | None = None,
     stop_event: threading.Event | None = None,
+    scratchpad: Callable[[], str] | None = None,
+    clear_scratchpad: Callable[[], None] | None = None,
 ) -> None:
     """Poll for a meeting, record it, summarize+save, then wait for it to
-    clear before watching again — until Ctrl-C or stop_event.is_set()."""
+    clear before watching again — until Ctrl-C or stop_event.is_set().
+
+    `scratchpad`/`clear_scratchpad` (daemon only) read and reset the
+    note-taker's live notes per meeting, so meeting 2 never inherits
+    meeting 1's notes; the CLI passes neither and behaves as before."""
     sink = resolve_sink(events)
 
     def stopped() -> bool:
@@ -65,10 +75,24 @@ def watch_loop(
                 f"{'Zoom meeting' if trigger == 'zoom' else 'Meeting'} "
                 f"{datetime.now():%d %b %H:%M}"
             )
+            # An explicit --template wins; otherwise auto-suggest from the real
+            # meeting name (the calendar/Zoom hint or --title), never from the
+            # timestamp placeholder.
+            template = opts.template or templates.suggest_template(opts.title or hint)
             watch.notify("whisper-to-me", f"Meeting detected — taking notes: {title}")
             console.print(
                 f"[bold green]● Meeting detected ({trigger})[/bold green] — recording '{title}'\n"
             )
+
+            # Brief: only for a real meeting name (hint or --title), never the
+            # timestamp placeholder. The live journal doesn't exist yet, so no
+            # note excludes itself here.
+            if opts.title or hint:
+                brief = briefs.find_brief(opts.notes_dir, title)
+                if brief:
+                    sink({"type": "brief", **brief})
+                    safe = re.sub(r'["\\]', "", brief["title"])
+                    watch.notify("whisper-to-me", f"Last time: {safe}")
 
             last_speech = time.monotonic()
 
@@ -95,6 +119,7 @@ def watch_loop(
                 should_stop=should_stop,
                 keep_echoes=opts.keep_echoes,
                 use_aec=opts.use_aec,
+                diarize=opts.diarize,
                 events=sink,
                 stop_event=stop_event,
             )
@@ -109,8 +134,12 @@ def watch_loop(
                 context=opts.context,
                 no_summary=opts.no_summary,
                 auto_title=opts.title is None and hint is None,
+                user_notes=scratchpad() if scratchpad is not None else "",
+                template=template,
                 events=sink,
             )
+            if clear_scratchpad is not None:
+                clear_scratchpad()
             watch.notify("whisper-to-me", f"Notes saved for: {title}")
 
             # Wait until the trigger clears so we don't instantly re-record

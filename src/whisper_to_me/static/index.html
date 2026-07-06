@@ -20,6 +20,7 @@
     <aside class="sidebar">
       <div class="sidebar-header">
         <span class="brand">whisper-to-me</span>
+        <button id="ask-btn" class="btn btn-ghost btn-sm">💬 Ask</button>
       </div>
       <div class="sidebar-search">
         <input id="search-input" type="search" placeholder="Search notes…" autocomplete="off">
@@ -36,6 +37,9 @@
         </div>
         <div class="controls">
           <input id="title-input" type="text" class="title-input" placeholder="Meeting title (optional)" maxlength="120">
+          <select id="template-select" class="template-select" title="Meeting template shaping the summary">
+            <option value="">Auto template</option>
+          </select>
           <button id="watch-btn" class="btn btn-ghost">Watch</button>
           <button id="record-btn" class="btn btn-primary">Record</button>
         </div>
@@ -45,12 +49,30 @@
         <div id="empty-state" class="empty-state">
           <p>Select a note from the sidebar, or start a recording.</p>
         </div>
-        <div id="transcript" class="transcript" hidden></div>
+        <div id="live-pane" class="live-pane" hidden>
+          <div id="transcript" class="transcript"></div>
+          <div class="scratchpad">
+            <div class="scratchpad-label">Your notes shape the summary</div>
+            <textarea id="scratchpad" spellcheck="false"
+              placeholder="Type your own notes here — each point is expanded in the final summary…"></textarea>
+          </div>
+        </div>
         <div id="note-container" class="note-container" hidden>
           <div class="note-toolbar">
             <span id="view-actions">
               <button id="edit-btn" class="btn btn-ghost btn-sm">Edit</button>
               <button id="copy-btn" class="btn btn-ghost btn-sm">Copy</button>
+              <span class="export-wrap">
+                <button id="export-btn" class="btn btn-ghost btn-sm">Export ▾</button>
+                <div id="export-menu" class="export-menu" hidden>
+                  <button id="slack-copy-btn" class="export-item">Copy for Slack</button>
+                  <button id="html-btn" class="export-item">Download HTML</button>
+                  <button id="pdf-btn" class="export-item">Print / PDF…</button>
+                  <button id="followup-btn" class="export-item">Draft follow-up email…</button>
+                  <button id="vault-btn" class="export-item" hidden>Copy to Obsidian vault</button>
+                  <button id="notion-btn" class="export-item" hidden>Push to Notion…</button>
+                </div>
+              </span>
             </span>
             <span id="edit-actions" hidden>
               <button id="save-btn" class="btn btn-primary btn-sm">Save</button>
@@ -60,8 +82,31 @@
           <article id="note-view" class="note-view"></article>
           <textarea id="note-editor" class="note-editor" spellcheck="false" hidden></textarea>
         </div>
+        <div id="chat-view" class="chat-view" hidden>
+          <div id="chat-messages" class="chat-messages">
+            <div class="chat-hint">Ask anything about your past meetings. Answers cite the notes they come from — nothing leaves your machine.</div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" type="text" placeholder="Ask about your meetings…" autocomplete="off">
+            <button type="submit" class="btn btn-primary btn-sm">Ask</button>
+          </form>
+        </div>
       </div>
     </main>
+  </div>
+
+  <div id="draft-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <span>Follow-up email draft</span>
+        <button id="draft-close" class="modal-close" title="Close">✕</button>
+      </div>
+      <textarea id="draft-text" class="modal-text" readonly spellcheck="false"></textarea>
+      <div class="modal-actions">
+        <span class="modal-note">Local draft — nothing is sent anywhere.</span>
+        <button id="draft-copy" class="btn btn-primary btn-sm">Copy</button>
+      </div>
+    </div>
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>

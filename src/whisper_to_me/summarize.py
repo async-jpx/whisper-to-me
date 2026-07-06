@@ -29,12 +29,13 @@ WINDOW_CHARS = 24_000  # ~6k tokens: window + prompts + JSON reply fit NUM_CTX
 OVERLAP_CHARS = 2_000  # tail of one window repeats at the start of the next
 SIMILAR_RATIO = 0.82   # fuzzy-dedupe threshold when merging across windows
 
-LIST_KEYS = ("topics", "key_points", "decisions", "risks", "open_questions")
+LIST_KEYS = ("topics", "key_points", "decisions", "risks", "open_questions", "attendees")
 
 EXTRACT_SCHEMA = {
     "type": "object",
     "properties": {
         "purpose": {"type": "string"},
+        "attendees": {"type": "array", "items": {"type": "string"}},
         "topics": {"type": "array", "items": {"type": "string"}},
         "key_points": {"type": "array", "items": {"type": "string"}},
         "decisions": {"type": "array", "items": {"type": "string"}},
@@ -71,17 +72,26 @@ You extract facts from an excerpt of a meeting transcript. Respond with JSON onl
 - action_items: concrete tasks somebody committed to; owner/due "" unless stated.
 - risks: risks, blockers, or concerns raised.
 - open_questions: questions raised but not answered in the text.
+- attendees: proper names of people taking part in the meeting itself, exactly
+  as spoken; not people who are merely mentioned or discussed.
 Empty arrays and "" are correct when the excerpt has nothing to report — never
 invent facts, names, or dates. Lines may be labeled **You:** (the note-taker)
-and **Others:** (the other participants) — use that to attribute action items.
+and **Others:** (the other participants); the others may be split further as
+**Speaker A:**, **Speaker B:**, … for distinct people — use these labels to
+attribute action items.
 The transcript may contain speech-recognition errors; interpret them by context.
 """
 
-SYNTH_SYSTEM = """\
+# The synthesis system prompt is assembled from three parts so meeting
+# templates (Phase 4.4) can swap the sections block while the faithfulness
+# rules always stay last and non-overridable. _synth_system("") reproduces the
+# original single-string prompt byte-for-byte — see the regression test.
+SYNTH_HEADER = """\
 You are a meeting-notes writer. You will receive structured facts extracted
 from the full transcript of one meeting. Write concise, actionable Markdown
-notes with exactly these sections:
+notes with exactly these sections:"""
 
+SYNTH_SECTIONS = """\
 ## TL;DR
 2-3 sentences: what the meeting was for and what came out of it.
 
@@ -99,13 +109,37 @@ Bulleted list.
 Bulleted list.
 
 ## Discussion
-The key points grouped by topic: a short bold topic label, then its bullets.
+The key points grouped by topic: a short bold topic label, then its bullets."""
 
+SYNTH_RULES = """\
 A section with no facts gets exactly one line — "None recorded." — and
 nothing else; never mix bullets with a "None" line. Be faithful to the given
 facts: merge near-duplicates, drop filler, never invent names, dates, or
-commitments. Keep every bullet short and concrete.
-"""
+commitments. Keep every bullet short and concrete."""
+
+# When the note-taker typed their own notes, the summary opens with a section
+# that repeats and expands each of their points from the extracted facts.
+SYNTH_NOTES_INSTRUCTION = """\
+The note-taker typed their own notes during the meeting. Open the output
+with one extra section, before all others:
+
+## Your Notes, Expanded
+Repeat each of the note-taker's points as a short bold line, then expand
+it with the relevant extracted facts as sub-bullets. A point the facts
+say nothing about gets the single sub-bullet "*Not discussed in the
+transcript.*" — never invent support for it."""
+
+
+def _synth_system(user_notes: str, sections: str = SYNTH_SECTIONS) -> str:
+    """Assemble the synthesis system prompt. `sections` is swappable by a
+    meeting template; the notes instruction is added only when the note-taker
+    typed something; the faithfulness rules always come last."""
+    parts = [SYNTH_HEADER]
+    if user_notes:
+        parts.append(SYNTH_NOTES_INSTRUCTION)
+    parts.append(sections)
+    parts.append(SYNTH_RULES)
+    return "\n\n".join(parts) + "\n"
 
 TITLE_SYSTEM = """\
 Name this meeting from the facts given. Respond with JSON only: a specific,
@@ -255,8 +289,15 @@ def _merge_facts(per_window: list[dict]) -> dict:
     return merged
 
 
-def _extract(window: str, n: int, total: int, model: str, context: str) -> dict:
+def _extract(
+    window: str, n: int, total: int, model: str, context: str, user_notes: str = ""
+) -> dict:
     prefix = f"Context from the organizer: {context}\n\n" if context else ""
+    if user_notes:
+        prefix += (
+            "The note-taker's own notes (facts related to these matter most):\n"
+            f"{user_notes[:2000]}\n\n"
+        )
     part = f"part {n} of {total} of the transcript" if total > 1 else "the transcript"
     return _chat_json(
         model, EXTRACT_SYSTEM, f"{prefix}This is {part}:\n\n{window}", EXTRACT_SCHEMA
@@ -274,23 +315,52 @@ def infer_title(facts: dict, model: str = DEFAULT_MODEL) -> str | None:
 
 
 def summarize_meeting(
-    transcript: str, model: str = DEFAULT_MODEL, context: str = ""
-) -> tuple[str, str | None]:
-    """Full pipeline: returns (markdown notes, inferred title or None)."""
+    transcript: str,
+    model: str = DEFAULT_MODEL,
+    context: str = "",
+    user_notes: str = "",
+    template: str | None = None,
+) -> tuple[str, str | None, dict]:
+    """Full pipeline: returns (markdown notes, inferred title or None, merged
+    facts). The facts feed note metadata (attendees in the frontmatter).
+    `user_notes` (the note-taker's live scratchpad) biases extraction and adds
+    an expanded-notes section; `template` names a meeting template whose
+    section block replaces the default one (ValueError if unknown)."""
+    sections = SYNTH_SECTIONS
+    if template is not None:
+        from . import templates as tmpl  # deferred: keeps summarize import light
+
+        resolved = tmpl.load_template(template)
+        if resolved is None:
+            raise ValueError(f"unknown meeting template: {template}")
+        sections = resolved.sections
     windows = _windows(transcript)
     facts = _merge_facts(
-        [_extract(w, n, len(windows), model, context) for n, w in enumerate(windows, 1)]
+        [
+            _extract(w, n, len(windows), model, context, user_notes)
+            for n, w in enumerate(windows, 1)
+        ]
     )
+    # Attendees are metadata, not summary material — keep them out of the
+    # synthesis input so they can't bleed into sections that have no place
+    # for them.
+    synth_facts = {k: v for k, v in facts.items() if k != "attendees"}
     prefix = f"Context from the organizer: {context}\n\n" if context else ""
+    notes_prefix = (
+        f"Notes typed by the note-taker during the meeting:\n\n{user_notes[:8000]}\n\n"
+        if user_notes
+        else ""
+    )
     notes_md = _chat(
         model,
-        SYNTH_SYSTEM,
+        _synth_system(user_notes, sections),
         prefix
+        + notes_prefix
         + "Structured facts extracted from the meeting transcript:\n\n"
-        + json.dumps(facts, indent=2, ensure_ascii=False),
+        + json.dumps(synth_facts, indent=2, ensure_ascii=False),
     )
     try:
         title = infer_title(facts, model)
     except OllamaError:
         title = None  # a note without an inferred title is still a good note
-    return notes_md, title
+    return notes_md, title, facts

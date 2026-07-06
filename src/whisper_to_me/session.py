@@ -51,6 +51,8 @@ class ConsoleSink:
                 f"[dim]Echo filter: removed {event['count']} mic line(s) that were "
                 "the speakers bleeding into the microphone.[/dim]"
             )
+        elif etype == "brief":
+            console.print(f"[dim]Last time — {event['title']}: {event['tldr']}[/dim]")
         elif etype == "summarizing":
             self._stop_status()
             self._status = console.status(f"Summarizing with {event['model']} (local)…")
@@ -126,6 +128,7 @@ def record_session(
     started: datetime | None = None,
     keep_echoes: bool = False,
     use_aec: bool = True,
+    diarize: bool = False,
     events: EventSink | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[list[tuple[str, str]], datetime]:
@@ -151,6 +154,22 @@ def record_session(
         )
         sources[1][1].block_listener = canceller.add_reference
         sources[0][1].preprocess = canceller.process
+
+    # Speaker diarization within "Others" (beta, opt-in). Embed each Others
+    # utterance now; cluster + relabel post-hoc, after echo removal and sort.
+    embedder = None
+    others_embeddings: dict[tuple[datetime, str], object] = {}
+    emb_lock = threading.Lock()
+    if diarize and len(sources) > 1:
+        from . import diarize as diar
+
+        if diar.available():
+            embedder = diar.SpeakerEmbedder()
+        else:
+            console.print(
+                "[yellow]Diarization requested but not installed — run "
+                "`uv sync --extra diarize`. Recording without speaker labels.[/yellow]"
+            )
 
     started = started or datetime.now()
     sink({"type": "status", "state": "recording", "title": title, "started": started.isoformat()})
@@ -191,6 +210,15 @@ def record_session(
                     line = f"**{speaker}:** {text}" if label else text
                     raw_lines.append((seg_at, duration, speaker, text))
                     notes.append_line(live_path, stamp, line)
+                    # Diarization: embed this Others utterance (never the mic).
+                    # Runs on the Others worker; embedding is far cheaper than
+                    # the Whisper decode it follows. Failures return None.
+                    if embedder is not None and speaker == dedup.CLEAN_SPEAKER:
+                        seg_audio = chunk[int(start_s * 16_000) : int(end_s * 16_000)]
+                        vec = embedder.embed(seg_audio)
+                        if vec is not None:
+                            with emb_lock:
+                                others_embeddings[(seg_at, text)] = vec
                     # "label" is a CLI-only helper: ConsoleSink always prints
                     # the speaker (the pre-event CLI did too, even solo), but
                     # the wire contract wants speaker=null for single-source
@@ -235,6 +263,21 @@ def record_session(
         raw_lines = kept
 
     raw_lines.sort(key=lambda line: line[0])
+
+    # Relabel "Others" into per-speaker labels AFTER echo removal (so dropped
+    # lines don't vote and the filter's "Others" comparisons still held) and
+    # BEFORE _merge_turns (so turns follow real speakers). Empty result → the
+    # audio didn't support ≥2 confident speakers; everything stays "Others".
+    if embedder is not None and others_embeddings:
+        from . import diarize as diar
+
+        speaker_labels = diar.assign_labels(raw_lines, others_embeddings)
+        if speaker_labels:
+            raw_lines = [
+                (t, dur, speaker_labels.get((t, text), sp) if sp == dedup.CLEAN_SPEAKER else sp, text)
+                for t, dur, sp, text in raw_lines
+            ]
+
     transcript_lines = [
         (str(t - started).split(".")[0], f"**{speaker}:** {text}" if label else text)
         for t, speaker, text in _merge_turns(raw_lines)
@@ -277,6 +320,7 @@ def simulate_session(
     system_path: str | None = None,
     keep_echoes: bool = False,
     use_aec: bool = True,
+    diarize: bool = False,
     events: EventSink | None = None,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Replay audio files through the live pipeline — chunking, transcription,
@@ -298,6 +342,7 @@ def simulate_session(
         keep_echoes=keep_echoes,
         events=events,
         use_aec=use_aec,
+        diarize=diarize,
         should_stop=lambda recorders: all(r.finished for r in recorders),
     )
 
@@ -311,11 +356,14 @@ def summarize_and_save(
     context: str = "",
     no_summary: bool = False,
     auto_title: bool = False,
+    user_notes: str = "",
+    template: str | None = None,
     events: EventSink | None = None,
 ) -> Path:
     sink = resolve_sink(events)
     summary = None
     inferred_title = None
+    attendees: list[str] = []
     if not no_summary and transcript_lines:
         text = "\n".join(t for _, t in transcript_lines)
         if not summ.check_model(ollama_model):
@@ -327,9 +375,14 @@ def summarize_and_save(
         else:
             sink({"type": "summarizing", "model": ollama_model})
             try:
-                summary, inferred_title = summ.summarize_meeting(
-                    text, model=ollama_model, context=context
+                summary, inferred_title, facts = summ.summarize_meeting(
+                    text,
+                    model=ollama_model,
+                    context=context,
+                    user_notes=user_notes,
+                    template=template,
                 )
+                attendees = [str(a) for a in facts.get("attendees") or []]
             except summ.OllamaError as exc:
                 sink({"type": "error", "message": str(exc)})
 
@@ -338,7 +391,9 @@ def summarize_and_save(
         final_title = inferred_title
         console.print(f"[dim]Inferred title:[/dim] [bold]{final_title}[/bold]")
 
-    path = notes.save_note(final_title, transcript_lines, summary, notes_dir, started)
+    path = notes.save_note(
+        final_title, transcript_lines, summary, notes_dir, started, attendees=attendees
+    )
     # The live journal was created under the placeholder title; now that the
     # final note is safely on disk, drop the stale copy. Never delete before
     # the new file exists — a crash in between must leave one complete copy.

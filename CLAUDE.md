@@ -4,6 +4,11 @@ Local, private Notion-style meeting notes CLI (**macOS only**). Listens to the
 mic and to system audio, live-transcribes with Whisper, summarizes with a local
 Ollama model, saves markdown notes. Hard constraint: **nothing ever leaves the
 machine** — no cloud APIs, no telemetry. Reject any change that violates this.
+Sole sanctioned exception: the **Notion push** (`wtm push` / the UI's "Push to
+Notion" button) sends exactly one note to `api.notion.com` — off unless the
+user pastes a token into config.toml, per-note, user-initiated, behind a
+confirmation showing what will be sent. Nothing may ever call it
+automatically; reject any change that widens this path.
 
 ## Commands
 
@@ -13,12 +18,24 @@ uv run wtm devices          # list audio inputs
 uv run wtm record           # record + live-transcribe + summarize (Ctrl-C stops)
 uv run wtm watch            # auto-detect meetings, Notion-style
 uv run wtm transcribe F     # audio file -> note
-uv run wtm summarize F      # re-summarize a transcript
-uv run wtm simulate --mic F [--system F]  # replay files through the live pipeline (no devices)
+uv run wtm summarize F [--user-notes F] [--template NAME]  # re-summarize a transcript
+uv run wtm ask "QUESTION"   # local RAG over all notes: cited answer from Ollama
+uv run wtm draft NOTE.md    # follow-up email draft from a note (local, to stdout)
+uv run wtm templates        # list meeting templates + where to add your own
+uv run wtm simulate --mic F [--system F] [--diarize]  # replay files through the live pipeline
+uv run wtm export [--obsidian PATH]  # copy notes into an Obsidian vault (local files)
+uv run wtm push NOTE.md     # push ONE note to Notion (opt-in + confirmed; see above)
 uv run wtm serve / wtm ui   # local daemon (127.0.0.1:8737) / + open web UI
 uv run ruff check src/     # lint (also runs via hook on edits)
 uv run pytest tests/       # unit + API tests
+uv sync --extra diarize    # optional: speaker diarization stack (torch — heavy)
 ```
+
+Phase-4 flags: `record`/`watch`/`simulate` take `--diarize` (split "Others"
+into Speaker A/B/C, beta); `record`/`watch`/`simulate`/`transcribe`/`summarize`
+take `--template NAME`; `summarize` also takes `--user-notes FILE`. The UI adds
+a live scratchpad (notes-first summaries), a template picker, a 💬 Ask chat
+view, "Draft follow-up email" in the Export menu, and "Last time…" briefs.
 
 Desktop app (Tauri menu-bar shell, `desktop/`):
 
@@ -48,8 +65,35 @@ echo_cancel.py acoustic echo cancellation: system audio subtracted from the
                mic signal (envelope+fine delay lock, FDAF NLMS, Geigel
                double-talk freeze); text dedup stays on as backstop
 summarize.py   Ollama pipeline: windowed JSON fact extraction (structured
-               outputs) → Python fuzzy merge → synthesis note + title inference
-notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite
+               outputs) → Python fuzzy merge → synthesis note + title inference.
+               Synthesis prompt = SYNTH_HEADER + (notes instruction) + sections
+               + SYNTH_RULES via _synth_system(); `user_notes`/`template` bias
+               extraction + swap the sections block (rules stay last)
+templates.py   meeting templates (default/one-on-one/standup/interview/
+               sales-call/brainstorm) as templates/*.md + user overrides in
+               ~/.config/whisper-to-me/templates/; suggest_template() matches by
+               title; every template must keep a "## Action Items" + "- [ ]"
+chat.py        local RAG (Phase 4.3): FTS5 retrieve (OR-match) → summary +
+               term-matching transcript lines as numbered sources → one _chat
+               call with [n] citations; sources filtered to those actually cited
+briefs.py      "Last time…" briefs: FTS find the most recent related note by
+               title, extract its TL;DR; emitted as a "brief" event (never
+               buffered in the replay), best-effort/never raises
+followup.py    follow-up email draft from a note's summary (transcript dropped)
+               via one _chat call; returned to the caller, never sent anywhere
+diarize.py     speaker diarization within "Others" (beta, opt-in `--diarize` +
+               `--extra diarize`): ECAPA embeddings (SpeechBrain, lazy) +
+               numpy agglomerative cosine clustering; degrades to "Others" when
+               the extra is missing or a cluster is unconfident
+notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite;
+               YAML frontmatter (title/date/attendees/tags) on saved notes
+config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
+               [obsidian] vault, [notion] token+database_id); read fresh per
+               use — no restart needed after edits
+export.py      Obsidian vault copies: frontmatter retrofit for the
+               back-catalog, skip-existing bulk export, per-note copy
+notion_export.py  the sanctioned Notion push: markdown→blocks, page create;
+               user-initiated only (wtm push / UI button), preview first
 watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process;
                title hints from Calendar.app / Zoom window (permission-gated)
 session.py     orchestration: sources ("You" mic / "Others" system), workers,
@@ -57,8 +101,10 @@ session.py     orchestration: sources ("You" mic / "Others" system), workers,
 runner.py      watch_loop: meeting-detection loop shared by CLI and daemon
 server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
                fan-out; single SessionManager owns the one active session
-search.py      SQLite FTS5 index over notes for GET /api/search
-static/        vendored web UI (no CDN); app.js supports #note=<name> deep links
+search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
+               has match_all (AND, sidebar default) vs OR (chat/briefs) mode
+static/        vendored web UI (no CDN); app.js supports #note=<name> deep
+               links, a live scratchpad, template picker, chat view, briefs
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →
@@ -74,6 +120,10 @@ Key invariants:
   never lose transcript lines. With an auto-inferred title the final note gets
   a new path; `summarize_and_save` deletes the placeholder journal only *after*
   the final note is written, so one complete copy always exists.
+- The Notion push is the only code allowed to touch a non-localhost address,
+  and only from `wtm push` / `POST /api/notes/{name}/notion` — both per-note
+  and user-confirmed. Never wire it into record/watch/summarize/anything
+  automatic, and never send the token anywhere but `api.notion.com`.
 
 ## Testing (important etiquette)
 
@@ -109,6 +159,33 @@ Key invariants:
 
 ## Sharp edges (each cost real debugging time)
 
+- **Chat/brief retrieval must OR-match, not AND** (search.py `match_all`): the
+  sidebar ANDs every query word (search-as-you-type), but a natural-language
+  question ("when does the exporter ship and who owns…") ANDs to *nothing* —
+  no note contains every word. chat.py and briefs.py pass `match_all=False`
+  (OR) and lean on bm25 ranking + recency. Don't route a question through the
+  AND path.
+- **Diarization degrades silently by design** (diarize.py): `embed()` swallows
+  any model/API error and returns None, and `assign_labels` returns `{}` unless
+  ≥2 clusters clear MIN_CLUSTER_SHARE — so a wrong SpeechBrain import or an
+  unconfident clustering just keeps plain "Others" instead of crashing. The
+  flip side: a broken embedding path looks like "no speakers found", not an
+  error. The import is `speechbrain.inference.classifiers.EncoderClassifier`
+  (not `.speaker`) + `encode_batch`; confirm against the installed source.
+- **Diarize relabel order is load-bearing** (session.py): relabel "Others" →
+  Speaker A/B *after* `drop_echoes` + sort and *before* `_merge_turns`. Earlier
+  and echo-dropped lines vote / the filter's "Others" comparisons break; later
+  and turns don't follow real speakers. Only Others segments are embedded
+  (never the mic), keyed by `(seg_at, text)`.
+- **Default template must equal SYNTH_SECTIONS byte-for-byte**
+  (templates/default.md): "no template" and `--template default` are asserted
+  identical (test_templates). `_synth_system("")` must also reproduce the old
+  single-string prompt exactly — the notes/template seams are additive only.
+- **Scratchpad sidecar stays out of the notes glob** (`.wtm-scratchpad.txt`,
+  server.py): it's crash-safety for the live scratchpad, but it must never be
+  a note — it works only because `*.md` globs and `_safe_note_path` exclude it.
+  Cleared on session start and after each meeting's save (watch clears per
+  meeting, or meeting 2 inherits meeting 1's notes).
 - **SCStream must stay strongly referenced** after `startCapture` — if the
   setup Task's local is the only reference, capture silently stops after ~1
   buffer. `activeStream` global exists for this.
@@ -162,7 +239,9 @@ Key invariants:
    naming a module you touched — those sections exist because plausible
    "fixes" broke them before.
 4. Privacy audit of the diff: no network calls, no cloud APIs, no telemetry.
-   Anything leaving the machine is an automatic reject.
+   Anything leaving the machine is an automatic reject — except the one
+   sanctioned, user-initiated Notion push path (see the header); even tests
+   must not hit `api.notion.com` (mock `notion_export._request`).
 5. Anything unverified (e.g. needs real mic/meeting audio, TCC permission,
    or a machine restart) is reported as unverified, not assumed working.
 

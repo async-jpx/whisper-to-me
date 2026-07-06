@@ -97,15 +97,17 @@ the CLI keeps working unchanged.
 
 ## Phase 3 — Export & interop *(user-requested)*
 
-1. **Obsidian (primary, fully local)** — less an "export" than making our
+1. ✅ **Obsidian (primary, fully local)** — less an "export" than making our
    notes vault-native:
-   - YAML frontmatter (`title`, `date`, `attendees`, `tags: [meeting]`,
-     `source: whisper-to-me`).
-   - Config option: write notes *directly into a vault folder* (notes dir =
-     vault subfolder) — zero-step integration.
-   - One-shot `wtm export --obsidian PATH` for the back-catalog, plus a
-     per-note "Copy to vault" button.
-2. **Notion (explicit opt-in — flagged constraint exception)** — Notion has
+   - YAML frontmatter (`title`, `date`, `attendees` — extracted by the
+     summarizer, `tags: [meeting]`, `source: whisper-to-me`).
+   - Config option (`notes_dir` in `~/.config/whisper-to-me/config.toml` —
+     the first slice of Phase 1.5): write notes *directly into a vault
+     folder* — zero-step integration.
+   - One-shot `wtm export --obsidian PATH` for the back-catalog (frontmatter
+     retrofitted, existing vault copies never clobbered), plus a per-note
+     "Copy to vault" in the UI's Export menu.
+2. ✅ **Notion (explicit opt-in — flagged constraint exception)** — Notion has
    no local API; export means a network call to `api.notion.com`. This
    violates the letter of "nothing ever leaves the machine", so it ships as:
    off by default, configured only by the user pasting an integration token,
@@ -113,31 +115,41 @@ the CLI keeps working unchanged.
    automatic), with a confirmation showing exactly what will be sent. Markdown
    → Notion blocks conversion; target database with title/date/attendee
    properties. `CLAUDE.md`'s privacy rule gets amended to name this one
-   sanctioned, user-initiated path.
-3. **Clipboard/file exports** (free wins): copy as markdown, copy summary as
-   Slack-friendly text, export PDF/HTML (local render).
+   sanctioned, user-initiated path. (Shipped as `wtm push` + UI button;
+   conversion/flow covered by offline tests — not yet exercised against the
+   live API, which needs a real integration token.)
+3. ✅ **Clipboard/file exports** (free wins): copy as markdown, copy summary
+   as Slack-friendly text, export HTML (standalone local render) and PDF (via
+   the print dialog) — all in the note view's Export menu.
 
 ## Phase 4 — Intelligence (catch up to Granola, locally)
 
-1. **Speaker diarization within "Others"** — we know You vs Others; split
-   Others into Speaker A/B/C via local embedding clustering
-   (pyannote/SpeechBrain embeddings, macOS-friendly). MacWhisper's is "beta"
-   quality — ours can be too; label it as such.
-2. **Notes-first enhancement (Granola's core trick)** — a scratchpad in the
-   live-session view; your typed bullets become anchors the summarizer must
-   address and expand from the transcript. Our windowed fact-extraction
-   pipeline already has the right shape for this (facts → merge → synthesis
-   guided by user bullets).
-3. **Chat with your meetings** — local RAG: FTS5 (+ optional local embeddings)
-   retrieval over transcripts → Ollama answers with citations linking back to
-   the note/line. Reuses the Phase-1 search index.
-4. **Meeting templates** — per-type synthesis prompts (1-on-1, standup, sales
-   call, interview, brainstorm), auto-suggested from calendar title, stored as
-   editable markdown prompt files.
-5. **Briefs** — before a detected meeting, surface the last note matching the
-   same attendees/calendar event: "Last time you discussed…".
-6. **Follow-up drafts** — "Draft follow-up email" button (local LLM, output to
-   clipboard — never sent anywhere).
+1. ✅ **Speaker diarization within "Others"** — splits Others into Speaker
+   A/B/C via local ECAPA embeddings (SpeechBrain) + numpy agglomerative cosine
+   clustering. Beta and opt-in (`--diarize` + `uv sync --extra diarize`, torch
+   is heavy); degrades to plain "Others" when the extra is missing or a
+   cluster is unconfident. (Clustering/labeling + graceful fallback verified;
+   the real ECAPA-on-real-voices path and its thresholds are tuned on
+   synthetic voices only — a known follow-up, like MacWhisper's beta.)
+2. ✅ **Notes-first enhancement (Granola's core trick)** — a live scratchpad in
+   the session view; your typed bullets bias fact extraction and open the
+   summary with a "Your Notes, Expanded" section (each point expanded from the
+   transcript, or marked "not discussed"). Crash-safe sidecar; per-meeting
+   reset in watch mode.
+3. ✅ **Chat with your meetings** — local RAG: FTS5 (OR-match) retrieval →
+   summary + term-matching transcript lines as numbered sources → one Ollama
+   call with `[n]` citations linking back to the note. `wtm ask` + a 💬 chat
+   view. (Embeddings retrieval left as a future upgrade; FTS is enough today.)
+4. ✅ **Meeting templates** — per-type section blocks (default, 1-on-1,
+   standup, sales-call, interview, brainstorm) as editable markdown,
+   auto-suggested from the meeting title in watch mode, user-overridable in
+   `~/.config/whisper-to-me/templates/`. `wtm templates` + a UI picker.
+5. ✅ **Briefs** — when a meeting starts with a known title, surface the most
+   recent related note's TL;DR ("Last time…") as an event + UI card +
+   notification. (Also fires on `simulate` so it's testable mic-free.)
+6. ✅ **Follow-up drafts** — "Draft follow-up email" in the Export menu +
+   `wtm draft` (local LLM over the summary, transcript dropped); output to a
+   copy-me modal / stdout — never sent anywhere.
 
 ## Phase 5 — Engine & robustness (parallel track, ongoing)
 

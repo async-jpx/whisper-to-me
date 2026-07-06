@@ -32,6 +32,8 @@ uv run wtm watch                          # Notion-style: auto-detects meetings 
 uv run wtm transcribe recording.wav       # transcribe + summarize an audio file
 uv run wtm summarize transcript.md        # (re)summarize existing text
 uv run wtm simulate --mic a.wav --system b.wav   # replay files through the pipeline (testing)
+uv run wtm export --obsidian ~/Vault/Meetings    # copy the back-catalog into a vault
+uv run wtm push 2026-07-06-standup.md            # push ONE note to Notion (opt-in, confirmed)
 ```
 
 Useful flags: `--model small|medium|large-v3` (Whisper size), `--language en`,
@@ -97,6 +99,35 @@ macOS attributes notifications from a bare dev binary to your terminal app:
 ```sh
 npx tauri build --bundles app   # → src-tauri/target/release/bundle/macos/whisper-to-me.app
 ```
+
+## Exports & interop
+
+Notes are plain markdown with YAML frontmatter (`title`, `date`, `attendees`,
+`tags: [meeting]`, `source: whisper-to-me`) — already vault-native for
+Obsidian. Optional config lives in `~/.config/whisper-to-me/config.toml`:
+
+```toml
+notes_dir = "~/Vault/Meetings"   # save new notes straight into your vault
+
+[obsidian]
+vault = "~/Vault/Meetings"       # target for `wtm export` / "Copy to vault"
+
+[notion]                         # OFF unless both keys are set — see below
+token = "ntn_..."                # your own Notion integration token
+database_id = "..."              # target database
+```
+
+- `wtm export --obsidian PATH` copies the whole back-catalog into a vault,
+  adding frontmatter to old notes; existing vault copies are never
+  overwritten (`--note NAME --overwrite` for a single refresh).
+- The web UI's **Export** menu: Copy for Slack (summary only, Slack
+  formatting), Download HTML (standalone file, rendered locally), Print/PDF,
+  Copy to Obsidian vault, Push to Notion.
+- **Notion push is the one deliberate exception** to "nothing leaves the
+  machine": it sends exactly one note to `api.notion.com`, only when you
+  trigger it (`wtm push NOTE.md` or the UI button), only after a confirmation
+  showing what will be sent, and only if you configured a token. Nothing is
+  ever pushed automatically.
 
 ## Performance notes
 

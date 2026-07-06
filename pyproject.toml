@@ -17,6 +17,11 @@ dependencies = [
     "uvicorn[standard]>=0.50.0",
 ]
 
+[project.optional-dependencies]
+# Speaker diarization within "Others" (beta) — heavy (torch), so opt-in only:
+#   uv sync --extra diarize
+diarize = ["speechbrain>=1.0", "torch>=2.2", "torchaudio>=2.2"]
+
 [project.scripts]
 wtm = "whisper_to_me.cli:main"
 

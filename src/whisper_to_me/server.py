@@ -29,8 +29,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import notes, search
+from . import briefs, chat, export, followup, notes, notion_export, search, templates
 from . import summarize as summ
+from .config import load_config
 from .runner import WatchOptions, watch_loop
 from .session import load_transcriber, record_session, simulate_session, summarize_and_save
 
@@ -57,6 +58,8 @@ class ServerOptions:
     use_aec: bool = True
     poll: float = 3.0
     silence_timeout: float = 120.0
+    template: str | None = None
+    diarize: bool = False
 
 
 class BusyError(RuntimeError):
@@ -96,6 +99,7 @@ class SessionManager:
         self._clients: list[_Client] = []
         self._clients_lock = threading.Lock()
         self._lines: list[dict] = []  # replay buffer for late-joining clients
+        self._scratchpad: str = ""  # note-taker's live notes (Phase 4.2)
 
     def _get_transcriber(self):
         if self._transcriber is None:
@@ -110,6 +114,35 @@ class SessionManager:
             if self.state == "idle" or not self.title or not self.started:
                 return None
             return notes.note_path(self.title, self.started, self.opts.notes_dir).name
+
+    # -- scratchpad (Phase 4.2): the note-taker's live notes, which guide the
+    # final summary. Persisted to a sidecar file (outside the *.md glob, so it
+    # is never a note, never indexed, never reachable via _safe_note_path) so a
+    # daemon crash mid-meeting can't lose what was typed.
+
+    SCRATCHPAD_FILE = ".wtm-scratchpad.txt"
+
+    def _scratchpad_path(self) -> Path:
+        return self.opts.notes_dir / self.SCRATCHPAD_FILE
+
+    def set_scratchpad(self, text: str) -> None:
+        with self._lock:
+            if self.state == "idle":
+                raise BusyError(self.state)
+            self._scratchpad = text
+            # Sidecar write stays under the lock so two racing PUTs can't
+            # leave the file holding an older value than memory.
+            self.opts.notes_dir.mkdir(parents=True, exist_ok=True)
+            notes.write_note_text(self._scratchpad_path(), text)
+
+    def get_scratchpad(self) -> str:
+        with self._lock:
+            return self._scratchpad
+
+    def _clear_scratchpad(self) -> None:
+        with self._lock:
+            self._scratchpad = ""
+        self._scratchpad_path().unlink(missing_ok=True)
 
     def status(self) -> dict:
         elapsed = (
@@ -194,7 +227,8 @@ class SessionManager:
         self._thread = threading.Thread(target=guarded, daemon=True)
         self._thread.start()
 
-    def start_record(self, title: str | None) -> None:
+    def start_record(self, title: str | None, template: str | None = None) -> None:
+        chosen_template = template or self.opts.template
         with self._lock:
             if self.state != "idle":
                 raise BusyError(self.state)
@@ -205,7 +239,15 @@ class SessionManager:
             )
             self._stop_event = threading.Event()
             self._lines = []
+            self._scratchpad = ""
         self._broadcast_status()
+        self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
+        # Brief only for a user-supplied title — the "Meeting <time>" placeholder
+        # can't match a prior meeting meaningfully.
+        if title:
+            brief = briefs.find_brief(self.opts.notes_dir, final_title)
+            if brief:
+                self._sink({"type": "brief", **brief})
 
         def run() -> None:
             transcriber = self._get_transcriber()
@@ -217,6 +259,7 @@ class SessionManager:
                 system_device=self.opts.system_device,
                 keep_echoes=self.opts.keep_echoes,
                 use_aec=self.opts.use_aec,
+                diarize=self.opts.diarize,
                 started=started,
                 events=self._sink,
                 stop_event=self._stop_event,
@@ -231,8 +274,11 @@ class SessionManager:
                 ollama_model=self.opts.ollama_model,
                 context=self.opts.context,
                 auto_title=title is None,
+                user_notes=self.get_scratchpad(),
+                template=chosen_template,
                 events=self._sink,
             )
+            self._clear_scratchpad()
 
         self._run_in_background(run)
 
@@ -251,7 +297,9 @@ class SessionManager:
             self.title, self.started, self.state, self._mode = None, None, "watching", "watch"
             self._stop_event = threading.Event()
             self._lines = []
+            self._scratchpad = ""
         self._broadcast_status()
+        self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
         stop_event = self._stop_event
 
         def run() -> None:
@@ -268,8 +316,17 @@ class SessionManager:
                 ollama_model=self.opts.ollama_model,
                 context=self.opts.context,
                 no_summary=False,
+                template=self.opts.template,
+                diarize=self.opts.diarize,
             )
-            watch_loop(transcriber, opts, events=self._sink, stop_event=stop_event)
+            watch_loop(
+                transcriber,
+                opts,
+                events=self._sink,
+                stop_event=stop_event,
+                scratchpad=self.get_scratchpad,
+                clear_scratchpad=self._clear_scratchpad,
+            )
 
         self._run_in_background(run)
 
@@ -281,7 +338,10 @@ class SessionManager:
         if stop_event is not None:
             stop_event.set()
 
-    def start_simulate(self, mic: str, system: str | None, no_summary: bool) -> None:
+    def start_simulate(
+        self, mic: str, system: str | None, no_summary: bool, template: str | None = None
+    ) -> None:
+        chosen_template = template or self.opts.template
         with self._lock:
             if self.state != "idle":
                 raise BusyError(self.state)
@@ -292,7 +352,14 @@ class SessionManager:
             )
             self._stop_event = threading.Event()
             self._lines = []
+            self._scratchpad = ""
         self._broadcast_status()
+        self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
+        # Simulate has a real-ish title ("Simulation <time>"), so it exercises
+        # the brief path mic-free: a second run matches the first run's note.
+        brief = briefs.find_brief(self.opts.notes_dir, final_title)
+        if brief:
+            self._sink({"type": "brief", **brief})
 
         def run() -> None:
             transcriber = self._get_transcriber()
@@ -304,6 +371,7 @@ class SessionManager:
                 system_path=system,
                 keep_echoes=self.opts.keep_echoes,
                 use_aec=self.opts.use_aec,
+                diarize=self.opts.diarize,
                 events=self._sink,
             )
             self.state = "summarizing"
@@ -317,14 +385,18 @@ class SessionManager:
                 context=self.opts.context,
                 no_summary=no_summary,
                 auto_title=True,
+                user_notes=self.get_scratchpad(),
+                template=chosen_template,
                 events=self._sink,
             )
+            self._clear_scratchpad()
 
         self._run_in_background(run)
 
 
 class RecordStartBody(BaseModel):
     title: str | None = None
+    template: str | None = None
 
 
 class NoteContentBody(BaseModel):
@@ -340,6 +412,16 @@ class SimulateBody(BaseModel):
     mic: str
     system: str | None = None
     no_summary: bool = False
+    template: str | None = None
+
+
+class ScratchpadBody(BaseModel):
+    content: str
+
+
+class ChatBody(BaseModel):
+    question: str
+    history: list[dict] = []
 
 
 def _list_notes(notes_dir: Path) -> list[dict]:
@@ -393,10 +475,22 @@ def create_app(opts: ServerOptions) -> FastAPI:
     def get_status():
         return manager.status()
 
+    def _validate_template(name: str | None) -> None:
+        if name is not None and templates.load_template(name) is None:
+            raise HTTPException(status_code=400, detail=f"unknown template: {name}")
+
+    @app.get("/api/templates")
+    def list_templates_endpoint():
+        return [
+            {"name": t.name, "description": t.description, "builtin": t.builtin}
+            for t in templates.list_templates()
+        ]
+
     @app.post("/api/record/start", status_code=202)
     def record_start(body: RecordStartBody = RecordStartBody()):
+        _validate_template(body.template)
         try:
-            manager.start_record(body.title)
+            manager.start_record(body.title, body.template)
         except BusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True}
@@ -434,11 +528,28 @@ def create_app(opts: ServerOptions) -> FastAPI:
         for label, value in (("mic", body.mic), ("system", body.system)):
             if value is not None and not Path(value).is_file():
                 raise HTTPException(status_code=400, detail=f"{label} file not found: {value}")
+        _validate_template(body.template)
         try:
-            manager.start_simulate(body.mic, body.system, body.no_summary)
+            manager.start_simulate(body.mic, body.system, body.no_summary, body.template)
         except BusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True}
+
+    @app.put("/api/session/scratchpad")
+    def put_scratchpad(body: ScratchpadBody):
+        # Cap the size so a runaway client can't grow daemon memory / the
+        # sidecar file unbounded.
+        if len(body.content) > 100_000:
+            raise HTTPException(status_code=413, detail="scratchpad too large")
+        try:
+            manager.set_scratchpad(body.content)
+        except BusyError as exc:
+            raise HTTPException(status_code=409, detail="no active session") from exc
+        return {"ok": True}
+
+    @app.get("/api/session/scratchpad")
+    def get_scratchpad():
+        return {"content": manager.get_scratchpad()}
 
     @app.get("/api/notes")
     def list_notes():
@@ -478,6 +589,70 @@ def create_app(opts: ServerOptions) -> FastAPI:
     @app.get("/api/search")
     def search_endpoint(q: str = ""):
         return search.search_notes(opts.notes_dir, q)
+
+    @app.post("/api/chat")
+    def chat_endpoint(body: ChatBody):
+        # Independent of the session state machine: asking questions while idle,
+        # recording, or summarizing are all fine. A sync def runs in FastAPI's
+        # threadpool, so a slow Ollama answer never blocks the event loop or the
+        # WebSocket fan-out; it merely queues behind any in-flight summarize.
+        q = body.question.strip()
+        if not q:
+            raise HTTPException(status_code=400, detail="empty question")
+        try:
+            return chat.answer_question(
+                opts.notes_dir, q, model=opts.ollama_model, history=body.history
+            )
+        except summ.OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # -- exports (Phase 3). Config is re-read per request so pasting a vault
+    # path or Notion token into config.toml needs no daemon restart.
+
+    @app.get("/api/export/config")
+    def export_config():
+        cfg = load_config()
+        return {
+            "obsidian_vault": str(cfg.obsidian_vault) if cfg.obsidian_vault else None,
+            "notion_configured": cfg.notion_configured,  # never the token itself
+        }
+
+    @app.post("/api/notes/{name}/vault")
+    def copy_note_to_vault(name: str):
+        path = _writable_note_path(name)  # live-journal guard: no partial copies
+        cfg = load_config()
+        if cfg.obsidian_vault is None:
+            raise HTTPException(status_code=400, detail="no vault configured")
+        dest = export.copy_to_vault(path, cfg.obsidian_vault, overwrite=True)
+        return {"ok": True, "path": str(dest)}
+
+    @app.post("/api/notes/{name}/followup")
+    def draft_followup_endpoint(name: str):
+        # Read-only, but the live-journal 409 is the right UX: a mid-recording
+        # journal has no summary to draft from.
+        path = _writable_note_path(name)
+        try:
+            draft = followup.draft_followup(
+                path.read_text(encoding="utf-8"), model=opts.ollama_model
+            )
+        except summ.OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"draft": draft}
+
+    @app.post("/api/notes/{name}/notion")
+    def push_note_to_notion(name: str):
+        """The one sanctioned network export — fires only from an explicit,
+        per-note user action in the UI (which confirms first). Never call
+        this from watch/record/summarize paths."""
+        path = _writable_note_path(name)
+        cfg = load_config()
+        if not cfg.notion_configured:
+            raise HTTPException(status_code=400, detail="Notion is not configured")
+        try:
+            url = notion_export.push_note(path, cfg.notion_token, cfg.notion_database_id)
+        except notion_export.NotionError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"ok": True, "url": url}
 
     @app.websocket("/api/events")
     async def events_ws(ws: WebSocket) -> None:
