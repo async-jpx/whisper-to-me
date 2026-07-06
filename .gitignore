@@ -9,5 +9,18 @@ wheels/
 # Virtual environments
 .venv
 
+# Desktop shell (Tauri); desktop/dist is source (the loading page), not a build output
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+!desktop/dist/
+desktop/app-icon.png
+# `tauri icon` output for platforms we don't ship (regenerate: gen_icons.py + npx tauri icon)
+desktop/src-tauri/icons/android/
+desktop/src-tauri/icons/ios/
+desktop/src-tauri/icons/Square*.png
+desktop/src-tauri/icons/StoreLogo.png
+desktop/src-tauri/icons/icon.ico
+
 # Claude Code personal overrides (shared settings are committed)
 .claude/settings.local.json

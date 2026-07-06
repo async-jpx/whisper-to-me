@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- Placeholder page the Tauri window shows while the local daemon starts.
+     The Rust shell navigates to http://127.0.0.1:8737/ once /api/status
+     answers; if the daemon can't start it writes the error into #msg. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>whisper-to-me</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #0f172a;
+    color: #cbd5e1;
+    font: 15px/1.5 -apple-system, "SF Pro Text", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .box { text-align: center; max-width: 32rem; padding: 2rem; }
+  .bars { display: flex; gap: 6px; justify-content: center; height: 34px; align-items: center; margin-bottom: 1.2rem; }
+  .bars span {
+    width: 6px; border-radius: 3px; background: #7dd3fc;
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  .bars span:nth-child(1) { height: 12px; animation-delay: 0s; }
+  .bars span:nth-child(2) { height: 22px; animation-delay: .15s; }
+  .bars span:nth-child(3) { height: 32px; animation-delay: .3s; }
+  .bars span:nth-child(4) { height: 22px; animation-delay: .45s; }
+  .bars span:nth-child(5) { height: 12px; animation-delay: .6s; }
+  @keyframes pulse { 0%, 100% { transform: scaleY(.6); opacity: .6; } 50% { transform: scaleY(1); opacity: 1; } }
+  #msg.error { color: #fca5a5; }
+  code { color: #e2e8f0; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="bars"><span></span><span></span><span></span><span></span><span></span></div>
+    <div id="msg">Starting the local whisper-to-me daemon…</div>
+  </div>
+</body>
+</html>

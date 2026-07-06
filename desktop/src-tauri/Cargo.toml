@@ -1,0 +1,22 @@
+[package]
+name = "whisper-to-me-desktop"
+version = "0.1.0"
+description = "Menu-bar shell around the local whisper-to-me daemon"
+edition = "2021"
+
+[lib]
+name = "whisper_to_me_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+serde_json = "1"
+# Everything below talks only to the loopback daemon (127.0.0.1:8737);
+# the shell itself must never make an off-machine request.
+ureq = { version = "2", features = ["json"] }
+tungstenite = "0.24"
+libc = "0.2"
