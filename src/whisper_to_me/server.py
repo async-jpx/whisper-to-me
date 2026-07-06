@@ -119,6 +119,7 @@ class SessionManager:
         )
         return {
             "state": self.state,
+            "mode": self._mode,
             "title": self.title,
             "started": self.started.isoformat() if self.started else None,
             "elapsed_s": elapsed,
