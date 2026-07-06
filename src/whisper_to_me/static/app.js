@@ -672,6 +672,14 @@
     }
   }
 
+  // ---------- deep links (#note=<name>, used by the desktop tray) ----------
+
+  function applyNoteHash() {
+    const m = location.hash.match(/^#note=(.+)$/);
+    if (m) openNote(decodeURIComponent(m[1]));
+  }
+  window.addEventListener("hashchange", applyNoteHash);
+
   // ---------- boot ----------
 
   async function boot() {
@@ -682,6 +690,7 @@
       el.app.hidden = false;
       applyStatus(status);
       await refreshNotes();
+      applyNoteHash();
       startElapsedTicker();
       connectEvents();
     } catch (err) {
