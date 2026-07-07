@@ -184,6 +184,86 @@ def test_notion_endpoint(client, monkeypatch):
     assert "bad token" in resp.json()["detail"]
 
 
+@pytest.fixture()
+def config_path(monkeypatch, tmp_path):
+    """Redirect config reads/writes to a throwaway file so the settings
+    endpoints exercise real save_config without touching ~/.config."""
+    import whisper_to_me.config as config
+
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+    return path
+
+
+def test_settings_get_defaults(client, config_path):
+    assert client.get("/api/settings").json() == {
+        "obsidian_vault": None,
+        "notion_configured": False,
+        "notion_database_id": None,
+        "notion_token_set": False,
+    }
+
+
+def test_connect_and_disconnect_obsidian(client, config_path):
+    resp = client.put("/api/settings/obsidian", json={"vault": "~/Vault/Meetings"})
+    assert resp.status_code == 200
+    assert resp.json()["obsidian_vault"].endswith("Vault/Meetings")
+    # it landed in the real config file, so /api/export/config sees it too
+    assert client.get("/api/export/config").json()["obsidian_vault"].endswith("Meetings")
+
+    resp = client.delete("/api/settings/obsidian")
+    assert resp.json()["obsidian_vault"] is None
+
+
+def test_connect_obsidian_requires_path(client, config_path):
+    assert client.put("/api/settings/obsidian", json={"vault": "  "}).status_code == 400
+
+
+def test_connect_notion_stores_pair_without_leaking_token(client, config_path):
+    resp = client.put(
+        "/api/settings/notion", json={"token": "ntn_super_secret", "database_id": "db1"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "obsidian_vault": None,
+        "notion_configured": True,
+        "notion_database_id": "db1",
+        "notion_token_set": True,
+    }
+    assert "ntn_super_secret" not in resp.text  # the token never goes over the wire
+
+
+def test_connect_notion_keeps_saved_token_when_blank(client, config_path):
+    client.put("/api/settings/notion", json={"token": "ntn_keep", "database_id": "db1"})
+    # re-save with only a new database id and no token: the token is kept
+    resp = client.put("/api/settings/notion", json={"database_id": "db2"})
+    assert resp.status_code == 200
+    assert resp.json()["notion_database_id"] == "db2"
+    from whisper_to_me.config import load_config
+
+    assert load_config(config_path).notion_token == "ntn_keep"
+
+
+def test_connect_notion_requires_token_when_none_saved(client, config_path):
+    resp = client.put("/api/settings/notion", json={"database_id": "db1"})
+    assert resp.status_code == 400
+    assert not load_config_configured(config_path)
+
+
+def test_disconnect_notion_clears_pair(client, config_path):
+    client.put("/api/settings/notion", json={"token": "t", "database_id": "d"})
+    resp = client.delete("/api/settings/notion")
+    assert resp.json()["notion_configured"] is False
+    assert not load_config_configured(config_path)
+
+
+def load_config_configured(path):
+    from whisper_to_me.config import load_config
+
+    return load_config(path).notion_configured
+
+
 def test_scratchpad_rejected_when_idle(client):
     assert client.put("/api/session/scratchpad", json={"content": "x"}).status_code == 409
     assert client.get("/api/session/scratchpad").json() == {"content": ""}

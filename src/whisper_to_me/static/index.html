@@ -20,7 +20,10 @@
     <aside class="sidebar">
       <div class="sidebar-header">
         <span class="brand">whisper-to-me</span>
-        <button id="ask-btn" class="btn btn-ghost btn-sm">💬 Ask</button>
+        <span class="sidebar-header-actions">
+          <button id="ask-btn" class="btn btn-ghost btn-sm">💬 Ask</button>
+          <button id="settings-btn" class="btn btn-ghost btn-sm" title="Connections & settings" aria-label="Settings">⚙</button>
+        </span>
       </div>
       <div class="sidebar-search">
         <input id="search-input" type="search" placeholder="Search notes…" autocomplete="off">
@@ -105,6 +108,65 @@
       <div class="modal-actions">
         <span class="modal-note">Local draft — nothing is sent anywhere.</span>
         <button id="draft-copy" class="btn btn-primary btn-sm">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <span>Connections</span>
+        <button id="settings-close" class="modal-close" title="Close">✕</button>
+      </div>
+      <p class="settings-intro">
+        Connect a destination to send your notes to. Everything else stays on this
+        machine — only an explicit, per-note “Push to Notion” ever leaves it.
+      </p>
+
+      <div class="connector" id="connector-obsidian">
+        <div class="connector-head">
+          <span class="connector-icon">🟣</span>
+          <span class="connector-name">Obsidian</span>
+          <span class="connector-status" data-status>Not connected</span>
+        </div>
+        <p class="connector-desc">Copy notes into an Obsidian vault as local Markdown files — never leaves your machine.</p>
+        <div class="connector-form">
+          <label class="field">
+            <span>Vault folder</span>
+            <input id="obsidian-vault" type="text" spellcheck="false" placeholder="~/Vault/Meetings">
+          </label>
+          <div class="connector-actions">
+            <button id="obsidian-disconnect" class="btn btn-ghost btn-sm" hidden>Disconnect</button>
+            <button id="obsidian-connect" class="btn btn-primary btn-sm">Connect</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector" id="connector-notion">
+        <div class="connector-head">
+          <span class="connector-icon">⬛</span>
+          <span class="connector-name">Notion</span>
+          <span class="connector-status" data-status>Not connected</span>
+        </div>
+        <p class="connector-desc">
+          Push a note to a Notion database. Paste an internal integration token and the
+          target database ID. Stored locally; nothing is sent until you push a note.
+        </p>
+        <div class="connector-form">
+          <label class="field">
+            <span>Integration token</span>
+            <input id="notion-token" type="password" spellcheck="false" autocomplete="off" placeholder="ntn_…">
+          </label>
+          <label class="field">
+            <span>Database ID</span>
+            <input id="notion-database" type="text" spellcheck="false" autocomplete="off" placeholder="e.g. 24f1a2b3c4d5…">
+          </label>
+          <div class="connector-actions">
+            <a class="connector-help" href="https://www.notion.so/my-integrations" target="_blank" rel="noreferrer noopener">Create a token ↗</a>
+            <button id="notion-disconnect" class="btn btn-ghost btn-sm" hidden>Disconnect</button>
+            <button id="notion-connect" class="btn btn-primary btn-sm">Connect</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
