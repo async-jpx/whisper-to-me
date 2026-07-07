@@ -18,6 +18,16 @@ with key points, decisions, and action items, saved as a Notion page.
 | Cloud LLM summarization | Ollama (`llama3.2:3b` by default) |
 | Notion page | Markdown note in `~/MeetingNotes` |
 
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md) — the pipeline, layer by layer:
+  capture, transcription, echo handling, summarization, storage, the daemon,
+  and how the pieces talk (events, threads, timestamps, crash safety, the
+  privacy model).
+- [docs/features.md](docs/features.md) — every feature in depth: recording,
+  meeting detection, templates, the scratchpad, chat over your notes, briefs,
+  diarization, search, and the export paths.
+
 ## Requirements
 
 - macOS, [Ollama](https://ollama.com) running, and `uv`
