@@ -94,6 +94,66 @@ def test_writes_to_live_journal_rejected(client):
     assert client.put("/api/notes/note.md", json={"content": "# Ok\n"}).status_code == 200
 
 
+def test_delete_note(client):
+    assert client.delete("/api/notes/note.md").status_code == 200
+    assert not (client.notes_dir / "note.md").exists()
+    assert client.get("/api/notes").json() == []
+
+
+def test_delete_unknown_note_404(client):
+    assert client.delete("/api/notes/nope.md").status_code == 404
+
+
+def test_delete_live_journal_rejected(client):
+    started = datetime(2026, 7, 6, 10, 0)
+    live = notes.start_live_note("Standup", started, client.notes_dir)
+    client.manager.state = "recording"
+    client.manager.title = "Standup"
+    client.manager.started = started
+    assert client.delete(f"/api/notes/{live.name}").status_code == 409
+    assert live.exists()
+
+
+def test_archive_restore_roundtrip(client):
+    resp = client.post("/api/notes/note.md/archive")
+    assert resp.status_code == 200
+    # gone from the active listing, no longer readable as a note
+    assert client.get("/api/notes").json() == []
+    assert client.get("/api/notes/note.md").status_code == 404
+    # the file itself moved into the Archive subfolder, intact
+    assert (client.notes_dir / "Archive" / "note.md").read_text(encoding="utf-8") == NOTE
+    # and it shows up in the archived listing
+    archived = client.get("/api/archived").json()
+    assert [(e["name"], e["title"]) for e in archived] == [("note.md", "Sprint Planning")]
+
+    # restore brings it back to the active notes
+    assert client.post("/api/archived/note.md/restore").status_code == 200
+    assert [e["name"] for e in client.get("/api/notes").json()] == ["note.md"]
+    assert client.get("/api/archived").json() == []
+
+
+def test_archive_live_journal_rejected(client):
+    started = datetime(2026, 7, 6, 10, 0)
+    live = notes.start_live_note("Standup", started, client.notes_dir)
+    client.manager.state = "recording"
+    client.manager.title = "Standup"
+    client.manager.started = started
+    assert client.post(f"/api/notes/{live.name}/archive").status_code == 409
+    assert live.exists()
+
+
+def test_delete_archived_note(client):
+    assert client.post("/api/notes/note.md/archive").status_code == 200
+    assert client.delete("/api/archived/note.md").status_code == 200
+    assert not (client.notes_dir / "Archive" / "note.md").exists()
+    assert client.get("/api/archived").json() == []
+
+
+def test_archived_endpoints_404_unknown(client):
+    assert client.post("/api/archived/nope.md/restore").status_code == 404
+    assert client.delete("/api/archived/nope.md").status_code == 404
+
+
 def test_search_endpoint(client):
     hits = client.get("/api/search", params={"q": "exporter"}).json()
     assert [h["name"] for h in hits] == ["note.md"]

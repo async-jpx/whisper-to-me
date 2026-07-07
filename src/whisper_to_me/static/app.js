@@ -10,6 +10,8 @@
     currentNoteMd: null, // its raw markdown (edit / copy / checkbox sync)
     editing: false,
     searchResults: null, // null = no active search; [] = search with no hits
+    viewArchived: false, // sidebar showing the Archive folder instead of notes
+    archived: [], // archived notes list (name/title/modified)
     chatHistory: [], // [{role, content}] for the chat view, in-memory only
     view: "empty", // "empty" | "transcript" | "note" | "chat"
     autoScroll: true,
@@ -29,6 +31,9 @@
     watchBtn: document.getElementById("watch-btn"),
     notesList: document.getElementById("notes-list"),
     searchInput: document.getElementById("search-input"),
+    sidebarSearch: document.querySelector(".sidebar-search"),
+    notesTab: document.getElementById("notes-tab"),
+    archivedTab: document.getElementById("archived-tab"),
     askBtn: document.getElementById("ask-btn"),
     chatView: document.getElementById("chat-view"),
     chatMessages: document.getElementById("chat-messages"),
@@ -61,6 +66,36 @@
     cancelBtn: document.getElementById("cancel-btn"),
     toasts: document.getElementById("toasts"),
   };
+
+  // ---------- inline icons (feather-style SVG paths; no external assets) ----------
+  // Static, developer-authored markup — never user/note content — so building
+  // each icon by setting innerHTML on a namespaced <svg> is safe.
+
+  const ICONS = {
+    archive:
+      '<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>',
+    restore:
+      '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+    trash:
+      '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+    close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    clipboard:
+      '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>',
+  };
+
+  function makeIcon(name, extraClass) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", "icon" + (extraClass ? " " + extraClass : ""));
+    svg.innerHTML = ICONS[name];
+    return svg;
+  }
 
   // ---------- small utils ----------
 
@@ -360,8 +395,65 @@
 
   // ---------- notes sidebar ----------
 
+  // A small round icon button used for the per-note sidebar actions.
+  function actionButton(iconName, label, danger, onClick) {
+    const btn = document.createElement("button");
+    btn.className = "note-action" + (danger ? " note-action-danger" : "");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.appendChild(makeIcon(iconName));
+    btn.addEventListener("click", (evt) => {
+      evt.stopPropagation(); // never trigger the row's openNote
+      onClick();
+    });
+    return btn;
+  }
+
+  function renderArchivedList() {
+    if (state.archived.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "notes-empty";
+      empty.textContent = "No archived notes.";
+      el.notesList.appendChild(empty);
+      return;
+    }
+    for (const note of state.archived) {
+      const li = document.createElement("li");
+      const row = document.createElement("div");
+      row.className = "note-row";
+
+      const item = document.createElement("div");
+      item.className = "note-item note-item-static";
+      const title = document.createElement("span");
+      title.className = "note-title";
+      title.textContent = note.title;
+      const date = document.createElement("span");
+      date.className = "note-date";
+      date.textContent = formatRelativeDate(note.modified);
+      item.appendChild(title);
+      item.appendChild(date);
+      row.appendChild(item);
+
+      const actions = document.createElement("div");
+      actions.className = "note-actions";
+      actions.appendChild(actionButton("restore", "Restore note", false, () => restoreNote(note)));
+      actions.appendChild(
+        actionButton("trash", "Delete permanently", true, () => deleteArchivedNote(note))
+      );
+      row.appendChild(actions);
+
+      li.appendChild(row);
+      el.notesList.appendChild(li);
+    }
+  }
+
   function renderNotesList() {
     el.notesList.innerHTML = "";
+
+    if (state.viewArchived) {
+      renderArchivedList();
+      return;
+    }
 
     if (state.status.state !== "idle") {
       const li = document.createElement("li");
@@ -395,6 +487,9 @@
 
     for (const note of entries) {
       const li = document.createElement("li");
+      const row = document.createElement("div");
+      row.className = "note-row";
+
       const btn = document.createElement("button");
       btn.className = "note-item" + (state.currentNote === note.name ? " active" : "");
       const title = document.createElement("span");
@@ -416,9 +511,119 @@
         btn.appendChild(snippet);
       }
       btn.addEventListener("click", () => openNote(note.name));
-      li.appendChild(btn);
+      row.appendChild(btn);
+
+      const actions = document.createElement("div");
+      actions.className = "note-actions";
+      actions.appendChild(actionButton("archive", "Archive note", false, () => archiveNote(note)));
+      actions.appendChild(actionButton("trash", "Delete note", true, () => deleteNote(note)));
+      row.appendChild(actions);
+
+      li.appendChild(row);
       el.notesList.appendChild(li);
     }
+  }
+
+  // ---------- sidebar tabs (Notes / Archived) + note actions ----------
+
+  function updateArchivedTab() {
+    const n = state.archived.length;
+    el.archivedTab.textContent = n ? `Archived (${n})` : "Archived";
+  }
+
+  async function refreshArchived() {
+    try {
+      state.archived = await (await apiGet("/api/archived")).json();
+    } catch (err) {
+      /* non-critical: leave the previous archived list */
+    }
+    updateArchivedTab();
+    if (state.viewArchived) renderNotesList();
+  }
+
+  function setSidebarTab(archived) {
+    state.viewArchived = archived;
+    el.notesTab.classList.toggle("active", !archived);
+    el.archivedTab.classList.toggle("active", archived);
+    el.sidebarSearch.hidden = archived; // search only spans active notes
+    if (archived) {
+      refreshArchived();
+    } else {
+      // Clear any in-progress search so the notes list shows in full.
+      el.searchInput.value = "";
+      state.searchResults = null;
+      renderNotesList();
+    }
+  }
+
+  el.notesTab.addEventListener("click", () => setSidebarTab(false));
+  el.archivedTab.addEventListener("click", () => setSidebarTab(true));
+
+  // If the note currently open was archived/deleted, clear the reading pane.
+  function forgetOpenNote(name) {
+    if (state.currentNote !== name) return;
+    state.currentNote = null;
+    state.currentNoteMd = null;
+    exitEditMode();
+    setView("empty");
+  }
+
+  async function archiveNote(note) {
+    const resp = await apiPost(`/api/notes/${encodeURIComponent(note.name)}/archive`);
+    if (!resp.ok) {
+      toast(
+        resp.status === 409 ? "That note is still being recorded." : "Could not archive the note.",
+        "error"
+      );
+      return;
+    }
+    forgetOpenNote(note.name);
+    refreshNotes();
+    refreshArchived();
+    toast(`Archived \u201c${note.title}\u201d`);
+  }
+
+  async function deleteNote(note) {
+    if (!confirm(`Delete \u201c${note.title}\u201d?\n\nThis permanently removes the note file.`)) return;
+    const resp = await fetch(`/api/notes/${encodeURIComponent(note.name)}`, {
+      method: "DELETE",
+    }).catch(() => null);
+    if (!resp || !resp.ok) {
+      toast(
+        resp && resp.status === 409
+          ? "That note is still being recorded."
+          : "Could not delete the note.",
+        "error"
+      );
+      return;
+    }
+    forgetOpenNote(note.name);
+    refreshNotes();
+    toast(`Deleted \u201c${note.title}\u201d`);
+  }
+
+  async function restoreNote(note) {
+    const resp = await apiPost(`/api/archived/${encodeURIComponent(note.name)}/restore`);
+    if (!resp.ok) {
+      toast("Could not restore the note.", "error");
+      return;
+    }
+    refreshArchived();
+    refreshNotes(); // it reappears in the Notes tab
+    toast(`Restored \u201c${note.title}\u201d`);
+  }
+
+  async function deleteArchivedNote(note) {
+    if (!confirm(`Delete \u201c${note.title}\u201d permanently?`)) return;
+    const resp = await fetch(`/api/archived/${encodeURIComponent(note.name)}`, {
+      method: "DELETE",
+    }).catch(() => null);
+    if (!resp || !resp.ok) {
+      toast("Could not delete the note.", "error");
+      return;
+    }
+    refreshArchived();
+    toast(`Deleted \u201c${note.title}\u201d`);
   }
 
   // ---------- sidebar search ----------
@@ -779,14 +984,16 @@
 
     const head = document.createElement("div");
     head.className = "brief-head";
-    head.appendChild(document.createTextNode("📋 Last time — "));
+    head.appendChild(makeIcon("clipboard"));
+    head.appendChild(document.createTextNode("Last time — "));
     const strong = document.createElement("strong");
     strong.textContent = evt.title || "";
     head.appendChild(strong);
     const dismiss = document.createElement("button");
     dismiss.className = "brief-dismiss";
-    dismiss.textContent = "✕";
+    dismiss.appendChild(makeIcon("close"));
     dismiss.title = "Dismiss";
+    dismiss.setAttribute("aria-label", "Dismiss");
     dismiss.addEventListener("click", () => card.remove());
     head.appendChild(dismiss);
     card.appendChild(head);
@@ -1152,6 +1359,7 @@
       el.app.hidden = false;
       applyStatus(status);
       await refreshNotes();
+      refreshArchived(); // populates the Archived tab count; non-blocking
       await syncScratchpad();
       await loadTemplates();
       applyNoteHash();

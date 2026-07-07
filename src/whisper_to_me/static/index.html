@@ -20,10 +20,17 @@
     <aside class="sidebar">
       <div class="sidebar-header">
         <span class="brand">whisper-to-me</span>
-        <button id="ask-btn" class="btn btn-ghost btn-sm">💬 Ask</button>
+        <button id="ask-btn" class="btn btn-ghost btn-sm">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span>Ask</span>
+        </button>
       </div>
       <div class="sidebar-search">
         <input id="search-input" type="search" placeholder="Search notes…" autocomplete="off">
+      </div>
+      <div class="sidebar-tabs">
+        <button id="notes-tab" class="sidebar-tab active">Notes</button>
+        <button id="archived-tab" class="sidebar-tab">Archived</button>
       </div>
       <ul id="notes-list" class="notes-list"></ul>
     </aside>
@@ -63,7 +70,10 @@
               <button id="edit-btn" class="btn btn-ghost btn-sm">Edit</button>
               <button id="copy-btn" class="btn btn-ghost btn-sm">Copy</button>
               <span class="export-wrap">
-                <button id="export-btn" class="btn btn-ghost btn-sm">Export ▾</button>
+                <button id="export-btn" class="btn btn-ghost btn-sm">
+                  <span>Export</span>
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
                 <div id="export-menu" class="export-menu" hidden>
                   <button id="slack-copy-btn" class="export-item">Copy for Slack</button>
                   <button id="html-btn" class="export-item">Download HTML</button>
@@ -99,7 +109,9 @@
     <div class="modal-card">
       <div class="modal-head">
         <span>Follow-up email draft</span>
-        <button id="draft-close" class="modal-close" title="Close">✕</button>
+        <button id="draft-close" class="modal-close" title="Close" aria-label="Close">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <textarea id="draft-text" class="modal-text" readonly spellcheck="false"></textarea>
       <div class="modal-actions">
