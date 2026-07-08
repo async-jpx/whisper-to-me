@@ -30,6 +30,16 @@
     notesList: document.getElementById("notes-list"),
     searchInput: document.getElementById("search-input"),
     askBtn: document.getElementById("ask-btn"),
+    settingsBtn: document.getElementById("settings-btn"),
+    settingsModal: document.getElementById("settings-modal"),
+    settingsClose: document.getElementById("settings-close"),
+    obsidianVault: document.getElementById("obsidian-vault"),
+    obsidianConnect: document.getElementById("obsidian-connect"),
+    obsidianDisconnect: document.getElementById("obsidian-disconnect"),
+    notionToken: document.getElementById("notion-token"),
+    notionDatabase: document.getElementById("notion-database"),
+    notionConnect: document.getElementById("notion-connect"),
+    notionDisconnect: document.getElementById("notion-disconnect"),
     chatView: document.getElementById("chat-view"),
     chatMessages: document.getElementById("chat-messages"),
     chatForm: document.getElementById("chat-form"),
@@ -990,6 +1000,124 @@
     if (!q || el.chatInput.disabled) return;
     el.chatInput.value = "";
     askQuestion(q);
+  });
+
+  // ---------- settings: connections (Obsidian / Notion) ----------
+  // These write config.toml through the daemon so the user connects a
+  // destination from the UI instead of hand-editing TOML. The token is never
+  // sent back to the page; a set token shows only as a connected state.
+
+  function renderConnector(prefix, connected, label) {
+    const card = document.getElementById(`connector-${prefix}`);
+    const status = card.querySelector("[data-status]");
+    status.textContent = connected ? label || "Connected" : "Not connected";
+    status.classList.toggle("connected", connected);
+    card.classList.toggle("is-connected", connected);
+  }
+
+  let notionTokenSet = false; // a token is on file (never sent back to the page)
+
+  function applySettings(cfg) {
+    el.obsidianVault.value = cfg.obsidian_vault || "";
+    renderConnector("obsidian", !!cfg.obsidian_vault);
+    el.obsidianDisconnect.hidden = !cfg.obsidian_vault;
+    el.obsidianConnect.textContent = cfg.obsidian_vault ? "Save" : "Connect";
+
+    el.notionDatabase.value = cfg.notion_database_id || "";
+    // The token is a secret we never receive back; leave the field blank and
+    // let the placeholder show a token is on file.
+    el.notionToken.value = "";
+    el.notionToken.placeholder = cfg.notion_token_set ? "•••••••• (saved — leave to keep)" : "ntn_…";
+    notionTokenSet = !!cfg.notion_token_set;
+    renderConnector("notion", cfg.notion_configured);
+    el.notionDisconnect.hidden = !(cfg.notion_configured || cfg.notion_token_set);
+    el.notionConnect.textContent = cfg.notion_configured ? "Save" : "Connect";
+  }
+
+  async function loadSettings() {
+    try {
+      const cfg = await (await apiGet("/api/settings")).json();
+      applySettings(cfg);
+    } catch (err) {
+      toast("Could not load your connections.", "error");
+    }
+  }
+
+  function openSettings() {
+    el.settingsModal.hidden = false;
+    loadSettings();
+  }
+
+  function closeSettings() {
+    el.settingsModal.hidden = true;
+  }
+
+  el.settingsBtn.addEventListener("click", openSettings);
+  el.settingsClose.addEventListener("click", closeSettings);
+  el.settingsModal.addEventListener("click", (evt) => {
+    if (evt.target === el.settingsModal) closeSettings(); // backdrop click
+  });
+  document.addEventListener("keydown", (evt) => {
+    if (evt.key === "Escape" && !el.settingsModal.hidden) closeSettings();
+  });
+
+  async function saveConnector(method, path, body, okMsg) {
+    let resp;
+    try {
+      resp = await fetch(path, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      toast("Could not reach the daemon.", "error");
+      return;
+    }
+    if (!resp.ok) {
+      let detail = "Could not save your connection.";
+      try {
+        detail = (await resp.json()).detail || detail;
+      } catch (err) {
+        /* keep the generic message */
+      }
+      toast(detail, "error");
+      return;
+    }
+    applySettings(await resp.json());
+    toast(okMsg);
+  }
+
+  el.obsidianConnect.addEventListener("click", () => {
+    const vault = el.obsidianVault.value.trim();
+    if (!vault) {
+      toast("Enter a vault folder path.", "error");
+      return;
+    }
+    saveConnector("PUT", "/api/settings/obsidian", { vault }, "Obsidian connected.");
+  });
+
+  el.obsidianDisconnect.addEventListener("click", () => {
+    saveConnector("DELETE", "/api/settings/obsidian", null, "Obsidian disconnected.");
+  });
+
+  el.notionConnect.addEventListener("click", () => {
+    const token = el.notionToken.value.trim();
+    const database_id = el.notionDatabase.value.trim();
+    if (!database_id) {
+      toast("Enter the Notion database ID.", "error");
+      return;
+    }
+    if (!token && !notionTokenSet) {
+      toast("Paste your Notion integration token.", "error");
+      return;
+    }
+    // Omit a blank token so the daemon keeps the one already on file.
+    const body = token ? { token, database_id } : { database_id };
+    saveConnector("PUT", "/api/settings/notion", body, "Notion connected.");
+  });
+
+  el.notionDisconnect.addEventListener("click", () => {
+    saveConnector("DELETE", "/api/settings/notion", null, "Notion disconnected.");
   });
 
   // ---------- controls ----------

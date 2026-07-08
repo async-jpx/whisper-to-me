@@ -853,6 +853,119 @@ body {
   color: var(--text-secondary);
 }
 
+/* ---------- settings: connections ---------- */
+
+#settings-modal .modal-card {
+  overflow-y: auto;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.settings-intro {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.connector {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.connector.is-connected {
+  border-color: var(--accent);
+}
+
+.connector-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.connector-icon {
+  font-size: 1.05rem;
+}
+
+.connector-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.connector-status {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+}
+
+.connector-status.connected {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.connector-desc {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0.5rem 0 0.7rem;
+}
+
+.connector-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.field input {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.connector-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.connector-help {
+  margin-right: auto;
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.connector-help:hover {
+  text-decoration: underline;
+}
+
 /* ---------- brief ("Last time…") card ---------- */
 
 .brief-card {

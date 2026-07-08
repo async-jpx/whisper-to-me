@@ -250,8 +250,9 @@ def cmd_export(args) -> None:
     vault = Path(args.obsidian).expanduser() if args.obsidian else load_config().obsidian_vault
     if vault is None:
         console.print(
-            "[red]No vault path: pass --obsidian PATH or set \\[obsidian] vault "
-            "in ~/.config/whisper-to-me/config.toml.[/red]"
+            "[red]No vault path: pass --obsidian PATH, connect a vault in the UI "
+            "(Settings → Connections), or set \\[obsidian] vault in "
+            "~/.config/whisper-to-me/config.toml.[/red]"
         )
         sys.exit(2)
 
@@ -283,8 +284,9 @@ def cmd_push(args) -> None:
     cfg = load_config()
     if not cfg.notion_configured:
         console.print(
-            "[red]Notion is not configured — set \\[notion] token and database_id "
-            "in ~/.config/whisper-to-me/config.toml.[/red]"
+            "[red]Notion is not configured — connect it in the UI (Settings → "
+            "Connections) or set \\[notion] token and database_id in "
+            "~/.config/whisper-to-me/config.toml.[/red]"
         )
         sys.exit(2)
     path = Path(args.notes_dir) / args.note

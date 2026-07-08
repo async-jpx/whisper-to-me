@@ -1,8 +1,14 @@
-"""User configuration — ~/.config/whisper-to-me/config.toml, read-only.
+"""User configuration — ~/.config/whisper-to-me/config.toml.
 
 Everything here is optional; the app runs fully without a config file. The
-file is read fresh on each use (no caching) so pasting a Notion token or a
-vault path takes effect without restarting the daemon.
+file is read fresh on each use (no caching) so connecting a vault or a Notion
+database takes effect without restarting the daemon.
+
+The file can be hand-edited, but the web UI also writes it (Settings →
+Connections) via `save_config`, so users never have to touch TOML to connect
+Obsidian or Notion — same on-disk format either way. Writing it does NOT add
+any network path: the Notion token merely lands on local disk; it is only ever
+sent by the sanctioned per-note push (see notion_export.py).
 
     notes_dir = "~/Vault/Meetings"      # save notes here (e.g. inside a vault)
 
@@ -16,6 +22,7 @@ vault path takes effect without restarting the daemon.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,3 +75,88 @@ def load_config(path: Path | None = None) -> Config:
         notion_token=_string(notion.get("token")),
         notion_database_id=_string(notion.get("database_id")),
     )
+
+
+# -- writing (UI Settings → Connections) --------------------------------------
+# The UI edits the same file hand-editors use. We keep a tiny TOML writer rather
+# than pull in a dependency: the schema is small and fully string-valued, so the
+# risk is low. Comments are not preserved on rewrite (documented in the UI).
+
+# UI-editable field -> where it lives in the file. Top-level keys have no table.
+_FIELDS: dict[str, tuple[str | None, str]] = {
+    "notes_dir": (None, "notes_dir"),
+    "obsidian_vault": ("obsidian", "vault"),
+    "notion_token": ("notion", "token"),
+    "notion_database_id": ("notion", "database_id"),
+}
+
+
+def _toml_str(value: str) -> str:
+    """A TOML basic string — only the two escapes our values can contain."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _dump_toml(data: dict) -> str:
+    """Serialize the config dict back to TOML. Handles top-level scalars and
+    one level of tables (all our keys fit this), preserving any extra keys the
+    user added; nested tables inside a table are dropped (we never write them)."""
+    top: list[str] = []
+    tables: list[str] = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            if not value:
+                continue
+            body = [
+                f"{k} = {_toml_str(str(v))}"
+                for k, v in value.items()
+                if not isinstance(v, dict)
+            ]
+            if body:
+                tables.append(f"[{key}]\n" + "\n".join(body))
+        elif isinstance(value, bool):
+            top.append(f"{key} = {'true' if value else 'false'}")
+        elif isinstance(value, (int, float)):
+            top.append(f"{key} = {value}")
+        else:
+            top.append(f"{key} = {_toml_str(str(value))}")
+    chunks = ["\n".join(top)] if top else []
+    chunks.extend(tables)
+    text = "\n\n".join(c for c in chunks if c)
+    return text + "\n" if text else ""
+
+
+def save_config(updates: dict[str, str | None], path: Path | None = None) -> Config:
+    """Merge `updates` into the config file and write it back atomically.
+
+    Keys are the Config field names in `_FIELDS`; a falsy/blank value clears
+    that setting (and prunes a table that becomes empty). Other keys already in
+    the file are preserved. The file may hold a Notion token, so it is written
+    0600. Purely local disk I/O — this adds no network path."""
+    path = path or CONFIG_PATH
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        data = {}
+
+    for field, value in updates.items():
+        table, key = _FIELDS[field]
+        clean = value.strip() if isinstance(value, str) else None
+        target = data
+        if table is not None:
+            existing = data.get(table)
+            target = existing if isinstance(existing, dict) else {}
+            data[table] = target
+        if clean:
+            target[key] = clean
+        else:
+            target.pop(key, None)
+        if table is not None and not data[table]:
+            del data[table]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(_dump_toml(data), encoding="utf-8")
+    os.chmod(tmp, 0o600)  # holds a secret (Notion token) — keep it user-only
+    os.replace(tmp, path)
+    return load_config(path)

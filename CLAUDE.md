@@ -6,9 +6,12 @@ Ollama model, saves markdown notes. Hard constraint: **nothing ever leaves the
 machine** — no cloud APIs, no telemetry. Reject any change that violates this.
 Sole sanctioned exception: the **Notion push** (`wtm push` / the UI's "Push to
 Notion" button) sends exactly one note to `api.notion.com` — off unless the
-user pastes a token into config.toml, per-note, user-initiated, behind a
-confirmation showing what will be sent. Nothing may ever call it
-automatically; reject any change that widens this path.
+user connects Notion (a token + database id, saved to config.toml by hand or
+via the UI's Settings → Connections), per-note, user-initiated, behind a
+confirmation showing what will be sent. Connecting only writes the token to
+local disk — it must never verify credentials over the network; the token is
+validated on first push. Nothing may ever call the push automatically; reject
+any change that widens this path.
 
 ## Commands
 
@@ -89,7 +92,9 @@ notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite;
                YAML frontmatter (title/date/attendees/tags) on saved notes
 config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
                [obsidian] vault, [notion] token+database_id); read fresh per
-               use — no restart needed after edits
+               use — no restart needed after edits; save_config writes it back
+               for the UI's Settings → Connections (local disk, chmod 600, no
+               network — connecting is never a token-verification call)
 export.py      Obsidian vault copies: frontmatter retrofit for the
                back-catalog, skip-existing bulk export, per-note copy
 notion_export.py  the sanctioned Notion push: markdown→blocks, page create;
@@ -100,11 +105,14 @@ session.py     orchestration: sources ("You" mic / "Others" system), workers,
                per-segment timestamps, turn-merged transcript, summarize_and_save
 runner.py      watch_loop: meeting-detection loop shared by CLI and daemon
 server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
-               fan-out; single SessionManager owns the one active session
+               fan-out; single SessionManager owns the one active session;
+               /api/settings connects Obsidian/Notion by writing config.toml
+               (save_config) — no network, the token never leaves via the wire
 search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
                has match_all (AND, sidebar default) vs OR (chat/briefs) mode
 static/        vendored web UI (no CDN); app.js supports #note=<name> deep
-               links, a live scratchpad, template picker, chat view, briefs
+               links, a live scratchpad, template picker, chat view, briefs,
+               and a Settings → Connections modal (connect Obsidian/Notion)
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →
@@ -123,7 +131,10 @@ Key invariants:
 - The Notion push is the only code allowed to touch a non-localhost address,
   and only from `wtm push` / `POST /api/notes/{name}/notion` — both per-note
   and user-confirmed. Never wire it into record/watch/summarize/anything
-  automatic, and never send the token anywhere but `api.notion.com`.
+  automatic, and never send the token anywhere but `api.notion.com`. Connecting
+  Notion in the UI (`PUT /api/settings/notion` → `save_config`) only writes the
+  token to local disk; it must stay a pure disk write — never add a "verify the
+  token" network call there, or you've opened a second path off the machine.
 
 ## Testing (important etiquette)
 
