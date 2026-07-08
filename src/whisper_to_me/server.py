@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from . import briefs, chat, export, followup, notes, notion_export, search, templates
 from . import summarize as summ
-from .config import load_config
+from .config import load_config, save_config
 from .runner import WatchOptions, watch_loop
 from .session import load_transcriber, record_session, simulate_session, summarize_and_save
 
@@ -424,6 +424,16 @@ class ChatBody(BaseModel):
     history: list[dict] = []
 
 
+class ObsidianSettingsBody(BaseModel):
+    vault: str
+
+
+class NotionSettingsBody(BaseModel):
+    # token omitted/blank keeps an already-saved one (the UI never re-sends it).
+    token: str | None = None
+    database_id: str
+
+
 def _list_notes(notes_dir: Path) -> list[dict]:
     if not notes_dir.is_dir():
         return []
@@ -675,6 +685,56 @@ def create_app(opts: ServerOptions) -> FastAPI:
             "obsidian_vault": str(cfg.obsidian_vault) if cfg.obsidian_vault else None,
             "notion_configured": cfg.notion_configured,  # never the token itself
         }
+
+    # -- connections (Settings UI). These write config.toml so users connect
+    # Obsidian / Notion from the UI instead of hand-editing TOML. Purely local
+    # disk I/O: saving a Notion token here adds NO network path — the token is
+    # only ever sent by the sanctioned per-note push (/api/notes/{name}/notion).
+
+    def _settings_state() -> dict:
+        cfg = load_config()
+        return {
+            "obsidian_vault": str(cfg.obsidian_vault) if cfg.obsidian_vault else None,
+            "notion_configured": cfg.notion_configured,
+            "notion_database_id": cfg.notion_database_id,  # id is not a secret
+            "notion_token_set": bool(cfg.notion_token),    # never the token itself
+        }
+
+    @app.get("/api/settings")
+    def get_settings():
+        return _settings_state()
+
+    @app.put("/api/settings/obsidian")
+    def connect_obsidian(body: ObsidianSettingsBody):
+        if not body.vault.strip():
+            raise HTTPException(status_code=400, detail="vault path is required")
+        save_config({"obsidian_vault": body.vault})
+        return _settings_state()
+
+    @app.delete("/api/settings/obsidian")
+    def disconnect_obsidian():
+        save_config({"obsidian_vault": None})
+        return _settings_state()
+
+    @app.put("/api/settings/notion")
+    def connect_notion(body: NotionSettingsBody):
+        # notion_configured (and every push) needs the token + database_id pair.
+        if not body.database_id.strip():
+            raise HTTPException(status_code=400, detail="database_id is required")
+        token = (body.token or "").strip() or load_config().notion_token
+        if not token:
+            raise HTTPException(
+                status_code=400, detail="a Notion integration token is required"
+            )
+        # No network verification here on purpose: the only code allowed to reach
+        # api.notion.com is the per-note push. Credentials are checked on first push.
+        save_config({"notion_token": token, "notion_database_id": body.database_id})
+        return _settings_state()
+
+    @app.delete("/api/settings/notion")
+    def disconnect_notion():
+        save_config({"notion_token": None, "notion_database_id": None})
+        return _settings_state()
 
     @app.post("/api/notes/{name}/vault")
     def copy_note_to_vault(name: str):
