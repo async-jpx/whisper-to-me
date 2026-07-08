@@ -146,6 +146,37 @@ body {
   border-color: var(--accent);
 }
 
+/* ---------- sidebar tabs (Notes / Archived) ---------- */
+
+.sidebar-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 0.75rem 0.5rem;
+}
+
+.sidebar-tab {
+  flex: 1;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.sidebar-tab:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar-tab.active {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .notes-list {
   list-style: none;
   margin: 0;
@@ -173,6 +204,73 @@ body {
 
 .note-item:hover, .live-item:hover {
   background: var(--bg-hover);
+}
+
+/* A note row holds the clickable note plus its hover-revealed actions. */
+.note-row {
+  position: relative;
+}
+
+.note-item {
+  /* leave room so the action buttons never sit on top of the date/title */
+  padding-right: 3.6rem;
+}
+
+.note-item-static {
+  cursor: default;
+}
+
+.note-item-static:hover {
+  background: none;
+}
+
+.note-actions {
+  position: absolute;
+  top: 50%;
+  right: 0.4rem;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 0.2rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.note-row:hover .note-actions,
+.note-row:focus-within .note-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.note-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+.note-action:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.note-action-danger:hover {
+  background: var(--danger-tint);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.note-action .icon {
+  width: 15px;
+  height: 15px;
 }
 
 .note-item.active, .live-item.active {
@@ -360,6 +458,17 @@ body {
   padding: 0.4rem 0.9rem;
   border: 1px solid transparent;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+}
+
+/* Inline SVG icons inherit color via currentColor and size with the text. */
+.icon {
+  width: 1.05em;
+  height: 1.05em;
+  flex-shrink: 0;
 }
 
 .btn:disabled {
@@ -823,6 +932,13 @@ body {
   cursor: pointer;
   font-size: 1rem;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem;
+}
+
+.modal-close:hover {
+  color: var(--text);
 }
 
 .modal-text {
@@ -991,6 +1107,13 @@ body {
   cursor: pointer;
   font-size: 0.85rem;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+}
+
+.brief-dismiss:hover {
+  color: var(--text);
 }
 
 .brief-tldr {

@@ -8,6 +8,11 @@ from pathlib import Path
 
 DEFAULT_NOTES_DIR = Path.home() / "MeetingNotes"
 
+# Archived notes move into this subfolder. It sits *outside* the top-level
+# `*.md` glob, so archiving drops a note out of the listing, search, briefs and
+# chat all at once while keeping the file intact for later restoring.
+ARCHIVE_DIRNAME = "Archive"
+
 # Must mirror what markdown-it-task-lists (the UI renderer) treats as a task
 # item — any list item whose content starts with "[ ] "/"[x] "/"[X] " — so the
 # UI's nth checkbox and toggle_task's nth match are the same line. (A literal
@@ -50,6 +55,25 @@ def split_frontmatter(text: str) -> tuple[str | None, str]:
 
 def note_path(title: str, started: datetime, notes_dir: Path = DEFAULT_NOTES_DIR) -> Path:
     return notes_dir / f"{started:%Y-%m-%d-%H%M}-{_slug(title)}.md"
+
+
+def archive_dir(notes_dir: Path = DEFAULT_NOTES_DIR) -> Path:
+    """The subfolder holding archived notes (see ARCHIVE_DIRNAME)."""
+    return notes_dir / ARCHIVE_DIRNAME
+
+
+def move_note(path: Path, dest_dir: Path) -> Path:
+    """Move a note into `dest_dir`, never overwriting: a name clash gets a
+    `-1`/`-2` suffix. Used to archive (main dir → Archive) and restore
+    (Archive → main dir). Returns the note's new path."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / path.name
+    counter = 1
+    while dest.exists():
+        dest = dest_dir / f"{path.stem}-{counter}{path.suffix}"
+        counter += 1
+    path.replace(dest)
+    return dest
 
 
 def note_title(path: Path) -> str:

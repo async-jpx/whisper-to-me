@@ -449,21 +449,45 @@ def _list_notes(notes_dir: Path) -> list[dict]:
     return entries
 
 
-def _safe_note_path(notes_dir: Path, name: str) -> Path | None:
-    """Resolve `name` under notes_dir and reject anything that escapes it —
-    guards the /api/notes/{name} endpoints against path traversal. Only
-    `.md` files qualify: everything else in the directory (the search index,
-    editor temp files) is not a note and must stay unreachable, especially
-    from the write endpoints."""
+def _list_archived(notes_dir: Path) -> list[dict]:
+    archive = notes.archive_dir(notes_dir)
+    if not archive.is_dir():
+        return []
+    entries = [
+        {
+            "name": path.name,
+            "title": notes.note_title(path),
+            "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+        }
+        for path in archive.glob("*.md")
+    ]
+    entries.sort(key=lambda e: e["modified"], reverse=True)
+    return entries
+
+
+def _resolve_md(base: Path, name: str) -> Path | None:
+    """Resolve `name` under `base` and reject anything that escapes it. Only
+    `.md` files qualify: everything else (the search index, editor temp files)
+    is not a note and must stay unreachable, especially from write/delete."""
     if not name.endswith(".md"):
         return None
-    base = notes_dir.resolve()
+    base = base.resolve()
     candidate = (base / name).resolve()
     try:
         candidate.relative_to(base)
     except ValueError:
         return None
     return candidate
+
+
+def _safe_note_path(notes_dir: Path, name: str) -> Path | None:
+    """Guards the /api/notes/{name} endpoints against path traversal."""
+    return _resolve_md(notes_dir, name)
+
+
+def _safe_archived_path(notes_dir: Path, name: str) -> Path | None:
+    """Same guard as _safe_note_path, rooted at the Archive subfolder."""
+    return _resolve_md(notes.archive_dir(notes_dir), name)
 
 
 def create_app(opts: ServerOptions) -> FastAPI:
@@ -594,6 +618,41 @@ def create_app(opts: ServerOptions) -> FastAPI:
         path = _writable_note_path(name)
         if body.task_index < 0 or not notes.toggle_task(path, body.task_index, body.checked):
             raise HTTPException(status_code=400, detail="no such task item")
+        return {"ok": True}
+
+    @app.delete("/api/notes/{name}")
+    def delete_note(name: str):
+        # Same live-journal guard as the write endpoints: never delete the note
+        # a session is still appending transcript lines to.
+        path = _writable_note_path(name)
+        path.unlink()
+        return {"ok": True}
+
+    @app.post("/api/notes/{name}/archive")
+    def archive_note(name: str):
+        path = _writable_note_path(name)  # live-journal guard: don't move a live note
+        dest = notes.move_note(path, notes.archive_dir(opts.notes_dir))
+        return {"ok": True, "name": dest.name}
+
+    @app.get("/api/archived")
+    def list_archived():
+        return _list_archived(opts.notes_dir)
+
+    def _archived_path(name: str) -> Path:
+        path = _safe_archived_path(opts.notes_dir, name)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="note not found")
+        return path
+
+    @app.post("/api/archived/{name}/restore")
+    def restore_note(name: str):
+        path = _archived_path(name)
+        dest = notes.move_note(path, opts.notes_dir)
+        return {"ok": True, "name": dest.name}
+
+    @app.delete("/api/archived/{name}")
+    def delete_archived(name: str):
+        _archived_path(name).unlink()
         return {"ok": True}
 
     @app.get("/api/search")
