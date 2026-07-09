@@ -103,13 +103,19 @@ class Recorder:
         self._chunker.start()
 
     def stop(self) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-        self._blocks.put(None)
-        if self._chunker is not None:
-            self._chunker.join(timeout=5)
-        self.chunks.put(None)
+        # The queue sentinels below must go out even when PortAudio errors on
+        # teardown: without them the chunker and the session's worker threads
+        # block forever on .get(), which wedges the whole session (the daemon
+        # then stays non-idle until restarted).
+        try:
+            if self._stream is not None:
+                self._stream.stop()
+                self._stream.close()
+        finally:
+            self._blocks.put(None)
+            if self._chunker is not None:
+                self._chunker.join(timeout=5)
+            self.chunks.put(None)
 
     def _chunk_loop(self) -> None:
         buffer: list[np.ndarray] = []
@@ -228,17 +234,21 @@ class SystemAudioTap(Recorder):
             self._blocks.put(np.frombuffer(data, dtype=np.float32))
 
     def stop(self) -> None:
-        if self._proc is not None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-        if self._pump is not None:
-            self._pump.join(timeout=3)
-        if self._chunker is not None:
-            self._chunker.join(timeout=5)
-        self.chunks.put(None)
+        # Same guarantee as Recorder.stop: the chunks sentinel always goes out,
+        # or the session's worker thread blocks forever and wedges the daemon.
+        try:
+            if self._proc is not None:
+                self._proc.terminate()
+                try:
+                    self._proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+            if self._pump is not None:
+                self._pump.join(timeout=3)
+            if self._chunker is not None:
+                self._chunker.join(timeout=5)
+        finally:
+            self.chunks.put(None)
 
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None

@@ -234,8 +234,21 @@ def record_session(
         return threading.Thread(target=worker)
 
     workers = [make_worker(speaker, rec) for speaker, rec in sources]
-    for _, rec in sources:
-        rec.start()
+    started_recs: list[audio.Recorder] = []
+    try:
+        for _, rec in sources:
+            rec.start()
+            started_recs.append(rec)
+    except Exception:
+        # A later source failing to start must not leave an earlier one (the
+        # mic!) capturing forever — that leak breaks every following session
+        # until the daemon restarts.
+        for rec in started_recs:
+            try:
+                rec.stop()
+            except Exception:
+                pass
+        raise
     for w in workers:
         w.start()
 
@@ -250,10 +263,19 @@ def record_session(
     except KeyboardInterrupt:
         pass
     console.print("\n[yellow]Stopping… transcribing remaining audio.[/yellow]")
+    stop_error: Exception | None = None
     for _, rec in sources:
-        rec.stop()
+        try:
+            rec.stop()
+        except Exception as exc:  # keep stopping the rest: a raised stop must
+            stop_error = exc      # not leak the other source's device/helper
     for w in workers:
         w.join()
+    if stop_error is not None:
+        sink({
+            "type": "error",
+            "message": f"An audio source failed to shut down cleanly: {stop_error}",
+        })
 
     if filter_echoes:
         kept = dedup.drop_echoes(raw_lines)

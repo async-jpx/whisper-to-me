@@ -20,10 +20,15 @@
     <aside class="sidebar">
       <div class="sidebar-header">
         <span class="brand">whisper-to-me</span>
-        <button id="ask-btn" class="btn btn-ghost btn-sm">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          <span>Ask</span>
-        </button>
+        <span class="sidebar-header-actions">
+          <button id="ask-btn" class="btn btn-ghost btn-sm">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>Ask</span>
+          </button>
+          <button id="settings-btn" class="btn btn-ghost btn-sm" title="Connections &amp; settings" aria-label="Settings">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </span>
       </div>
       <div class="sidebar-search">
         <input id="search-input" type="search" placeholder="Search notes…" autocomplete="off">
@@ -48,13 +53,22 @@
             <option value="">Auto template</option>
           </select>
           <button id="watch-btn" class="btn btn-ghost">Watch</button>
-          <button id="record-btn" class="btn btn-primary">Record</button>
+          <button id="record-btn" class="btn btn-primary">
+            <span class="rec-glyph" aria-hidden="true"></span>
+            <span id="record-btn-label">New meeting</span>
+          </button>
         </div>
       </div>
 
       <div id="content" class="content">
         <div id="empty-state" class="empty-state">
-          <p>Select a note from the sidebar, or start a recording.</p>
+          <p class="empty-title">Ready when you are</p>
+          <p>Start a new meeting to record and transcribe it live —<br>everything stays on this machine.</p>
+          <button id="empty-record-btn" class="btn btn-primary btn-lg">
+            <span class="rec-glyph" aria-hidden="true"></span>
+            <span>Start a new meeting</span>
+          </button>
+          <p class="empty-hint">…or pick a past meeting from the sidebar.</p>
         </div>
         <div id="live-pane" class="live-pane" hidden>
           <div id="transcript" class="transcript"></div>
@@ -90,7 +104,10 @@
             </span>
           </div>
           <article id="note-view" class="note-view"></article>
-          <textarea id="note-editor" class="note-editor" spellcheck="false" hidden></textarea>
+          <div id="editor-split" class="editor-split" hidden>
+            <textarea id="note-editor" class="note-editor" spellcheck="false"></textarea>
+            <article id="editor-preview" class="note-view editor-preview" aria-label="Preview"></article>
+          </div>
         </div>
         <div id="chat-view" class="chat-view" hidden>
           <div id="chat-messages" class="chat-messages">

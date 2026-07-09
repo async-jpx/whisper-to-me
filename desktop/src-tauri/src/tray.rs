@@ -126,20 +126,24 @@ pub fn refresh(app: &AppHandle) {
         "Daemon offline".to_string()
     } else {
         match status.state.as_str() {
+            "starting" => "Starting the recorder…".to_string(),
             "recording" => match &status.title {
                 Some(t) => format!("Recording — {t}"),
                 None => "Recording".to_string(),
             },
             "watching" => "Watching for meetings".to_string(),
+            "stopping" => "Finishing — transcribing the last audio…".to_string(),
             "summarizing" => "Summarizing…".to_string(),
             _ => "Idle — ready".to_string(),
         }
     };
     let _ = handles.status_line.set_text(line);
     let _ = handles.start.set_enabled(status.online && status.state == "idle");
-    let _ = handles
-        .stop
-        .set_enabled(status.online && mode == "record" && status.state == "recording");
+    let _ = handles.stop.set_enabled(
+        status.online
+            && mode == "record"
+            && matches!(status.state.as_str(), "starting" | "recording"),
+    );
     let _ = handles.watch.set_enabled(status.online && status.state == "idle");
     let _ = handles
         .unwatch
@@ -159,7 +163,7 @@ fn tray_title(status: &daemon::Status) -> String {
             let total = elapsed.max(0.0) as u64;
             format!("{}:{:02}", total / 60, total % 60)
         }
-        "summarizing" => "…".to_string(),
+        "stopping" | "summarizing" => "…".to_string(),
         _ => String::new(),
     }
 }

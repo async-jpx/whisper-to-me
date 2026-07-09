@@ -88,7 +88,13 @@ class SessionManager:
 
     def __init__(self, opts: ServerOptions) -> None:
         self.opts = opts
-        self.state = "idle"  # idle | recording | watching | summarizing
+        # idle | starting | recording | watching | stopping | summarizing.
+        # "starting" covers the gap between the start request and audio
+        # actually flowing (first record also loads the Whisper model here);
+        # "stopping" covers the drain after a stop request (remaining audio is
+        # still being transcribed). Both exist so the UI can show honest
+        # feedback instead of a button that appears to do nothing.
+        self.state = "idle"
         self.title: str | None = None
         self.started: datetime | None = None
         self._mode: str | None = None  # "record" | "watch" | "simulate"
@@ -96,15 +102,17 @@ class SessionManager:
         self._thread: threading.Thread | None = None
         self._stop_event: threading.Event | None = None
         self._transcriber = None
+        self._transcriber_lock = threading.Lock()
         self._clients: list[_Client] = []
         self._clients_lock = threading.Lock()
         self._lines: list[dict] = []  # replay buffer for late-joining clients
         self._scratchpad: str = ""  # note-taker's live notes (Phase 4.2)
 
     def _get_transcriber(self):
-        if self._transcriber is None:
-            self._transcriber = load_transcriber(self.opts.model, self.opts.language)
-        return self._transcriber
+        with self._transcriber_lock:
+            if self._transcriber is None:
+                self._transcriber = load_transcriber(self.opts.model, self.opts.language)
+            return self._transcriber
 
     def live_note_name(self) -> str | None:
         """Filename of the live journal while a session is writing it — the
@@ -176,10 +184,16 @@ class SessionManager:
         recording is under way) and are re-broadcast with elapsed_s added;
         everything else is forwarded as-is, minus CLI-only extras."""
         if event.get("type") == "status":
-            self.state = event["state"]
-            self.title = event.get("title")
-            started = event.get("started")
-            self.started = datetime.fromisoformat(started) if started else None
+            with self._lock:
+                # A stop has been requested: the session's own progress events
+                # ("recording"/"watching") must not flip the state back — the
+                # wind-down is what the user is watching now.
+                if self.state == "stopping" and event["state"] in ("recording", "watching"):
+                    return
+                self.state = event["state"]
+                self.title = event.get("title")
+                started = event.get("started")
+                self.started = datetime.fromisoformat(started) if started else None
             self._broadcast_status()
             return
         wire = {k: v for k, v in event.items() if k not in _WIRE_EXCLUDE}
@@ -234,8 +248,10 @@ class SessionManager:
                 raise BusyError(self.state)
             started = datetime.now()
             final_title = title or f"Meeting {started:%d %b %H:%M}"
+            # "starting" until record_session's own status event confirms
+            # audio is flowing — the first record loads Whisper in between.
             self.title, self.started, self.state, self._mode = (
-                final_title, started, "recording", "record",
+                final_title, started, "starting", "record",
             )
             self._stop_event = threading.Event()
             self._lines = []
@@ -286,7 +302,14 @@ class SessionManager:
         with self._lock:
             if self._mode != "record" or self.state == "idle":
                 raise BusyError(self.state)
+            if self.state in ("stopping", "summarizing"):
+                return  # already winding down: a second stop click is a no-op
+            # Flip to "stopping" *now*: the session thread keeps state
+            # "recording" while it drains the transcription backlog, which can
+            # take many seconds — without this the stop click looks ignored.
+            self.state = "stopping"
             stop_event = self._stop_event
+        self._broadcast_status()
         if stop_event is not None:
             stop_event.set()
 
@@ -334,7 +357,11 @@ class SessionManager:
         with self._lock:
             if self._mode != "watch" or self.state == "idle":
                 raise BusyError(self.state)
+            if self.state in ("stopping", "summarizing"):
+                return  # already winding down
+            self.state = "stopping"
             stop_event = self._stop_event
+        self._broadcast_status()
         if stop_event is not None:
             stop_event.set()
 
