@@ -28,6 +28,8 @@
     titleInput: document.getElementById("title-input"),
     templateSelect: document.getElementById("template-select"),
     recordBtn: document.getElementById("record-btn"),
+    recordBtnLabel: document.getElementById("record-btn-label"),
+    emptyRecordBtn: document.getElementById("empty-record-btn"),
     watchBtn: document.getElementById("watch-btn"),
     notesList: document.getElementById("notes-list"),
     searchInput: document.getElementById("search-input"),
@@ -56,6 +58,8 @@
     noteContainer: document.getElementById("note-container"),
     noteView: document.getElementById("note-view"),
     noteEditor: document.getElementById("note-editor"),
+    editorSplit: document.getElementById("editor-split"),
+    editorPreview: document.getElementById("editor-preview"),
     viewActions: document.getElementById("view-actions"),
     editActions: document.getElementById("edit-actions"),
     editBtn: document.getElementById("edit-btn"),
@@ -347,13 +351,19 @@
 
   // ---------- session bar ----------
 
+  // True between a record start/stop click and the daemon's next status
+  // event: the button disables immediately so the click visibly "took".
+  let recordPending = false;
+
   function updateSessionBar() {
     const s = state.status;
     el.statusDot.className = "status-dot status-" + s.state;
 
     const labels = {
       idle: "Ready",
+      starting: "Starting the recorder…",
       recording: s.title || "Recording",
+      stopping: "Finishing — transcribing the last audio…",
       watching: "Watching for meetings…",
       summarizing: "Summarizing…",
     };
@@ -368,18 +378,22 @@
       el.elapsed.textContent = "";
     }
 
-    el.recordBtn.disabled = s.state === "watching" || s.state === "summarizing";
-    el.watchBtn.disabled = s.state === "recording" || s.state === "summarizing";
+    const busy = s.state === "stopping" || s.state === "summarizing";
+    el.recordBtn.disabled = busy || s.state === "watching" || recordPending;
+    el.watchBtn.disabled = s.state !== "idle" && s.state !== "watching";
     el.titleInput.disabled = s.state !== "idle";
     el.templateSelect.disabled = s.state !== "idle";
 
-    if (s.state === "recording") {
-      el.recordBtn.textContent = "Stop";
-      el.recordBtn.classList.add("is-stop");
-    } else {
-      el.recordBtn.textContent = "Record";
-      el.recordBtn.classList.remove("is-stop");
-    }
+    // The record button doubles as the stop button while a session runs
+    // ("starting" included, so a misclick can be cancelled immediately).
+    const asStop = s.state === "recording" || s.state === "starting";
+    el.recordBtn.classList.toggle("is-stop", asStop);
+    el.recordBtn.classList.toggle("is-busy", busy || recordPending);
+    el.recordBtnLabel.textContent = busy
+      ? (s.state === "stopping" ? "Finishing…" : "Summarizing…")
+      : asStop
+        ? "Stop"
+        : "New meeting";
 
     if (s.state === "watching") {
       el.watchBtn.textContent = "Stop Watching";
@@ -707,19 +721,128 @@
     state.editing = true;
     el.noteEditor.value = state.currentNoteMd || "";
     el.noteView.hidden = true;
-    el.noteEditor.hidden = false;
+    el.editorSplit.hidden = false;
+    el.noteContainer.classList.add("editing"); // widen: editor + live preview
     el.viewActions.hidden = true;
     el.editActions.hidden = false;
+    renderEditorPreview();
     el.noteEditor.focus();
   }
 
   function exitEditMode() {
     state.editing = false;
-    el.noteEditor.hidden = true;
+    el.editorSplit.hidden = true;
+    el.noteContainer.classList.remove("editing");
     el.noteView.hidden = false;
     el.viewActions.hidden = false;
     el.editActions.hidden = true;
   }
+
+  // ---------- markdown editor: live preview + Notion-style typing ----------
+
+  // The preview reuses the same (html:false) markdown-it renderer as the note
+  // view, so what you see while typing is exactly what Save will show.
+  function renderEditorPreview() {
+    el.editorPreview.innerHTML = md.render(stripFrontmatter(el.noteEditor.value));
+  }
+
+  let previewTimer = null;
+  function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(renderEditorPreview, 150);
+  }
+
+  el.noteEditor.addEventListener("input", schedulePreview);
+
+  // Insert text at the caret, keeping the browser's undo stack when possible
+  // (execCommand is deprecated but still the only undo-preserving path).
+  function editorInsert(text) {
+    const ta = el.noteEditor;
+    let done = false;
+    try {
+      done = text
+        ? document.execCommand("insertText", false, text)
+        : document.execCommand("delete", false);
+    } catch (err) {
+      done = false;
+    }
+    if (!done) {
+      ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+    }
+    schedulePreview();
+  }
+
+  // "- ", "* ", "1. ", "- [ ] "… — the prefixes the editor auto-continues.
+  const LIST_PREFIX_RE = /^(\s*)([-*+]|\d+[.)])(\s+)(\[[ xX]\]\s+)?/;
+
+  function currentLineBounds(ta) {
+    const start = ta.value.lastIndexOf("\n", ta.selectionStart - 1) + 1;
+    const nl = ta.value.indexOf("\n", ta.selectionStart);
+    return [start, nl === -1 ? ta.value.length : nl];
+  }
+
+  el.noteEditor.addEventListener("keydown", (evt) => {
+    const ta = el.noteEditor;
+
+    // Cmd/Ctrl+B / I: wrap the selection in **bold** / *italics*.
+    if ((evt.metaKey || evt.ctrlKey) && (evt.key === "b" || evt.key === "i")) {
+      evt.preventDefault();
+      const wrap = evt.key === "b" ? "**" : "*";
+      const start = ta.selectionStart;
+      const sel = ta.value.slice(start, ta.selectionEnd);
+      editorInsert(wrap + sel + wrap);
+      ta.selectionStart = start + wrap.length;
+      ta.selectionEnd = start + wrap.length + sel.length;
+      return;
+    }
+
+    if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+
+    // Enter continues lists and task items; Enter on an empty item ends the
+    // list (both as in Notion/Obsidian).
+    if (evt.key === "Enter" && !evt.shiftKey && ta.selectionStart === ta.selectionEnd) {
+      const [lineStart] = currentLineBounds(ta);
+      const line = ta.value.slice(lineStart, ta.selectionStart);
+      const m = line.match(LIST_PREFIX_RE);
+      if (!m) return;
+      evt.preventDefault();
+      if (!line.slice(m[0].length)) {
+        ta.selectionStart = lineStart; // empty item: remove the marker
+        editorInsert("");
+        return;
+      }
+      let marker = m[2];
+      const num = marker.match(/^(\d+)([.)])$/);
+      if (num) marker = `${Number(num[1]) + 1}${num[2]}`;
+      editorInsert("\n" + m[1] + marker + m[3] + (m[4] ? "[ ] " : ""));
+      return;
+    }
+
+    // Tab / Shift+Tab indent and outdent list items.
+    if (evt.key === "Tab") {
+      evt.preventDefault();
+      const caret = ta.selectionStart;
+      const [lineStart, lineEnd] = currentLineBounds(ta);
+      const line = ta.value.slice(lineStart, lineEnd);
+      if (LIST_PREFIX_RE.test(line)) {
+        if (evt.shiftKey) {
+          const removed = Math.min(2, (line.match(/^ */) || [""])[0].length);
+          if (removed === 0) return;
+          ta.selectionStart = lineStart;
+          ta.selectionEnd = lineStart + removed;
+          editorInsert("");
+          const pos = Math.max(lineStart, caret - removed);
+          ta.selectionStart = ta.selectionEnd = pos;
+        } else {
+          ta.selectionStart = ta.selectionEnd = lineStart;
+          editorInsert("  ");
+          ta.selectionStart = ta.selectionEnd = caret + 2;
+        }
+      } else if (!evt.shiftKey) {
+        editorInsert("  ");
+      }
+    }
+  });
 
   async function saveEdit() {
     const content = el.noteEditor.value;
@@ -1329,11 +1452,34 @@
 
   // ---------- controls ----------
 
-  el.recordBtn.addEventListener("click", async () => {
-    if (state.status.state === "recording") {
-      await apiPost("/api/record/stop");
-      return;
+  // Re-fetch the daemon's status and apply it. This is the self-heal path:
+  // whenever the page's mirrored state disagrees with the daemon (missed
+  // WebSocket event, sleeping laptop, failed request), one resync puts the
+  // buttons back in a usable state instead of leaving the UI wedged.
+  async function resyncStatus() {
+    try {
+      applyStatus(await fetchStatus());
+    } catch (err) {
+      /* daemon unreachable: the WS close handler shows the retry card */
     }
+  }
+
+  window.addEventListener("focus", resyncStatus);
+
+  function markRecordPending() {
+    recordPending = true;
+    updateSessionBar();
+    // Failsafe: if no status event arrives (dead socket), unlock and resync
+    // rather than leaving the button disabled forever.
+    setTimeout(() => {
+      if (recordPending) {
+        recordPending = false;
+        resyncStatus();
+      }
+    }, 5000);
+  }
+
+  async function startRecording() {
     const title = el.titleInput.value.trim();
     // Clear + switch view *before* the request so the brief the daemon emits
     // during start (delivered over the socket right after) isn't wiped by a
@@ -1341,28 +1487,72 @@
     clearTranscript();
     state.currentNote = null;
     setView("transcript");
-    const resp = await apiPost("/api/record/start", {
-      title: title || null,
-      template: el.templateSelect.value || null,
-    });
-    if (resp.status === 409) {
-      toast("Already busy — can't start a recording right now.", "error");
-    } else if (!resp.ok) {
-      toast("Could not start recording.", "error");
+    let resp = null;
+    try {
+      resp = await apiPost("/api/record/start", {
+        title: title || null,
+        template: el.templateSelect.value || null,
+      });
+    } catch (err) {
+      /* network error: handled below */
     }
-  });
+    if (resp && resp.ok) return;
+    recordPending = false;
+    toast(
+      resp && resp.status === 409
+        ? "The daemon is busy with another session — try again in a moment."
+        : "Could not start recording.",
+      "error"
+    );
+    await resyncStatus();
+    if (state.status.state === "idle") setView("empty");
+  }
+
+  async function stopRecording() {
+    let resp = null;
+    try {
+      resp = await apiPost("/api/record/stop");
+    } catch (err) {
+      /* network error: handled below */
+    }
+    if (resp && resp.ok) return;
+    recordPending = false;
+    toast("Could not stop the recording.", "error");
+    await resyncStatus();
+  }
+
+  function onRecordClick() {
+    if (recordPending || state.status.state === "watching") return;
+    markRecordPending();
+    if (state.status.state === "recording" || state.status.state === "starting") {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }
+
+  el.recordBtn.addEventListener("click", onRecordClick);
+  el.emptyRecordBtn.addEventListener("click", onRecordClick);
 
   el.watchBtn.addEventListener("click", async () => {
-    if (state.status.state === "watching") {
-      await apiPost("/api/watch/stop");
-      return;
+    let resp = null;
+    try {
+      if (state.status.state === "watching") {
+        resp = await apiPost("/api/watch/stop");
+      } else {
+        resp = await apiPost("/api/watch/start");
+      }
+    } catch (err) {
+      /* network error: handled below */
     }
-    const resp = await apiPost("/api/watch/start");
-    if (resp.status === 409) {
-      toast("Already busy — can't start watching right now.", "error");
-    } else if (!resp.ok) {
-      toast("Could not start watching.", "error");
-    }
+    if (resp && resp.ok) return;
+    toast(
+      resp && resp.status === 409
+        ? "Already busy — can't do that right now."
+        : "Could not reach the daemon.",
+      "error"
+    );
+    await resyncStatus();
   });
 
   // ---------- WebSocket ----------
@@ -1423,9 +1613,11 @@
   function applyStatus(status) {
     const prev = state.status.state;
     state.status = status;
+    recordPending = false; // the daemon answered; buttons follow real state again
     // A fresh session starts with an empty scratchpad; a mid-session reconnect
     // repopulates it from the daemon (syncScratchpad) instead of wiping it.
-    if (prev === "idle" && (status.state === "recording" || status.state === "watching")) {
+    const sessionStates = ["starting", "recording", "watching"];
+    if (prev === "idle" && sessionStates.includes(status.state)) {
       el.scratchpad.value = "";
       scratchpadErrorShown = false;
     }

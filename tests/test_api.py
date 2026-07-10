@@ -449,3 +449,75 @@ def test_followup_ollama_down_503(client, monkeypatch):
 
     monkeypatch.setattr(server.followup, "draft_followup", boom)
     assert client.post("/api/notes/note.md/followup").status_code == 503
+
+
+# ---------- record lifecycle (record_session is faked: no audio devices) ----
+
+
+def _wait_for_state(client, state: str, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if client.get("/api/status").json()["state"] == state:
+            return
+        time.sleep(0.02)
+    raise AssertionError(
+        f"daemon never reached {state!r} (at {client.get('/api/status').json()['state']!r})"
+    )
+
+
+def test_record_lifecycle_states(client, monkeypatch):
+    """start -> starting/recording; stop -> stopping (immediately, while the
+    session drains) -> idle. Repeat stops are no-ops; starts stay rejected
+    until idle. This is the contract the UI's button feedback relies on."""
+    import threading
+
+    import whisper_to_me.server as server
+
+    release = threading.Event()
+
+    def fake_record_session(transcriber, title, notes_dir, **kwargs):
+        kwargs["events"](
+            {
+                "type": "status",
+                "state": "recording",
+                "title": title,
+                "started": kwargs["started"].isoformat(),
+            }
+        )
+        assert kwargs["stop_event"].wait(timeout=10)
+        # Hold the session in its wind-down until the test releases it, so
+        # the "stopping" state is observable without sleeps.
+        assert release.wait(timeout=10)
+        return [], kwargs["started"]
+
+    def fake_summarize_and_save(title, transcript_lines, started, notes_dir, **kwargs):
+        return notes_dir / "unused.md"
+
+    monkeypatch.setattr(server, "record_session", fake_record_session)
+    monkeypatch.setattr(server, "summarize_and_save", fake_summarize_and_save)
+    client.manager._transcriber = object()  # skip the Whisper model load
+
+    assert client.post("/api/record/start", json={}).status_code == 202
+    _wait_for_state(client, "recording")
+    assert client.post("/api/record/start", json={}).status_code == 409
+
+    assert client.post("/api/record/stop").status_code == 202
+    assert client.get("/api/status").json()["state"] == "stopping"
+    # while draining: another stop is a friendly no-op, a start is still busy
+    assert client.post("/api/record/stop").status_code == 202
+    assert client.post("/api/record/start", json={}).status_code == 409
+
+    release.set()
+    _wait_for_state(client, "idle")
+    # the daemon is reusable afterwards: a new start is accepted again
+    assert client.post("/api/record/start", json={}).status_code == 202
+    _wait_for_state(client, "recording")
+    client.manager.stop_record()
+    release.set()
+    _wait_for_state(client, "idle")
+
+
+def test_stop_record_while_idle_409(client):
+    assert client.post("/api/record/stop").status_code == 409

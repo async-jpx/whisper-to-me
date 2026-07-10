@@ -30,7 +30,7 @@ pub fn base_url() -> String {
 #[derive(Default, Clone)]
 pub struct Status {
     pub online: bool,
-    pub state: String, // idle | recording | watching | summarizing
+    pub state: String, // idle | starting | recording | watching | stopping | summarizing
     pub mode: Option<String>, // record | watch | simulate
     pub title: Option<String>,
     pub elapsed_base: f64,
