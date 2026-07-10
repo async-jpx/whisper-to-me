@@ -17,6 +17,8 @@ pub struct TrayHandles {
     stop: MenuItem<Wry>,
     watch: MenuItem<Wry>,
     unwatch: MenuItem<Wry>,
+    record_meeting: MenuItem<Wry>,
+    ignore_meeting: MenuItem<Wry>,
     open_last: MenuItem<Wry>,
 }
 
@@ -26,6 +28,10 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     let stop = MenuItem::with_id(app, "stop", "Stop recording", false, None::<&str>)?;
     let watch = MenuItem::with_id(app, "watch", "Start watching for meetings", false, None::<&str>)?;
     let unwatch = MenuItem::with_id(app, "unwatch", "Stop watching", false, None::<&str>)?;
+    let record_meeting =
+        MenuItem::with_id(app, "record-meeting", "Record this meeting", false, None::<&str>)?;
+    let ignore_meeting =
+        MenuItem::with_id(app, "ignore-meeting", "Ignore this meeting", false, None::<&str>)?;
     let open_last = MenuItem::with_id(app, "open-last", "Open last note", false, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "Open whisper-to-me", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -39,6 +45,8 @@ pub fn setup(app: &App) -> tauri::Result<()> {
             &stop,
             &watch,
             &unwatch,
+            &record_meeting,
+            &ignore_meeting,
             &PredefinedMenuItem::separator(app)?,
             &open_last,
             &show,
@@ -63,6 +71,8 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         stop,
         watch,
         unwatch,
+        record_meeting,
+        ignore_meeting,
         open_last,
     });
     Ok(())
@@ -74,6 +84,12 @@ fn on_menu(app: &AppHandle, id: &str) {
         "stop" => daemon::api_post("/api/record/stop"),
         "watch" => daemon::api_post("/api/watch/start"),
         "unwatch" => daemon::api_post("/api/watch/stop"),
+        "record-meeting" => {
+            daemon::api_post_body("/api/watch/respond", r#"{"accept": true}"#.to_string())
+        }
+        "ignore-meeting" => {
+            daemon::api_post_body("/api/watch/respond", r#"{"accept": false}"#.to_string())
+        }
         "open-last" => open_last_note(app),
         "show" => show_main(app),
         "quit" => app.exit(0),
@@ -132,13 +148,21 @@ pub fn refresh(app: &AppHandle) {
                 None => "Recording".to_string(),
             },
             "watching" => "Watching for meetings".to_string(),
+            "prompting" => match &status.title {
+                Some(t) => format!("Meeting detected — {t}"),
+                None => "Meeting detected — record?".to_string(),
+            },
             "stopping" => "Finishing — transcribing the last audio…".to_string(),
             "summarizing" => "Summarizing…".to_string(),
             _ => "Idle — ready".to_string(),
         }
     };
     let _ = handles.status_line.set_text(line);
-    let _ = handles.start.set_enabled(status.online && status.state == "idle");
+    // "Start recording" also works while watching: the daemon preempts the
+    // idle watch and re-arms it after the manual recording is saved.
+    let _ = handles
+        .start
+        .set_enabled(status.online && matches!(status.state.as_str(), "idle" | "watching"));
     let _ = handles.stop.set_enabled(
         status.online
             && mode == "record"
@@ -148,6 +172,9 @@ pub fn refresh(app: &AppHandle) {
     let _ = handles
         .unwatch
         .set_enabled(status.online && mode == "watch" && status.state != "idle");
+    let prompting = status.online && status.state == "prompting";
+    let _ = handles.record_meeting.set_enabled(prompting);
+    let _ = handles.ignore_meeting.set_enabled(prompting);
     let _ = handles.open_last.set_enabled(status.online);
 
     // Always Some(...): set_title(None) does not clear an existing title on

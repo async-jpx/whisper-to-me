@@ -6,6 +6,7 @@
 //! shell must never make an off-machine request.
 
 mod daemon;
+mod prompt;
 mod tray;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};

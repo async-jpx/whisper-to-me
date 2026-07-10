@@ -6,14 +6,23 @@ kAudioDevicePropertyDeviceIsRunningSomewhere on the default input device tells
 us when *any* app (Zoom, Teams, Meet in a browser, FaceTime…) opens the mic.
 Zoom additionally gets precise start/end detection via its in-meeting helper
 process (CptHost), which only runs during an active call.
+
+Meeting *end* detection (how Granola/Notion do it too): while we are recording,
+the device-level signal is useless — our own recorder keeps the input device
+running. macOS 14+ exposes per-process audio objects
+(kAudioHardwarePropertyProcessObjectList + kAudioProcessPropertyIsRunningInput),
+so `mic_in_use_by_others` can tell whether any process *other than ourselves*
+still holds the microphone — when the call app releases it, the meeting is
+over. Everything here stays a purely local CoreAudio query.
 """
 
 from __future__ import annotations
 
 import ctypes
+import os
 import struct
 import subprocess
-from ctypes import byref, c_uint32, sizeof
+from ctypes import byref, c_int32, c_uint32, sizeof
 
 _coreaudio = ctypes.CDLL(
     "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
@@ -51,6 +60,63 @@ def mic_in_use() -> bool:
         return False
     running = _get_u32_property(device, "gone")  # ...DeviceIsRunningSomewhere
     return bool(running)
+
+
+def _get_object_list(object_id: int, selector: str) -> list[int] | None:
+    """Read an array-of-AudioObjectID property (e.g. the process list)."""
+    addr = _PropertyAddress(_fourcc(selector), _fourcc("glob"), 0)
+    size = c_uint32(0)
+    status = _coreaudio.AudioObjectGetPropertyDataSize(
+        c_uint32(object_id), byref(addr), 0, None, byref(size)
+    )
+    if status != 0:
+        return None
+    count = size.value // sizeof(c_uint32)
+    if count == 0:
+        return []
+    values = (c_uint32 * count)()
+    status = _coreaudio.AudioObjectGetPropertyData(
+        c_uint32(object_id), byref(addr), 0, None, byref(size), byref(values)
+    )
+    return list(values) if status == 0 else None
+
+
+def _get_pid_property(object_id: int, selector: str) -> int | None:
+    """Read a pid_t property (pid_t is a signed 32-bit int on macOS)."""
+    addr = _PropertyAddress(_fourcc(selector), _fourcc("glob"), 0)
+    value = c_int32(0)
+    size = c_uint32(sizeof(value))
+    status = _coreaudio.AudioObjectGetPropertyData(
+        c_uint32(object_id), byref(addr), 0, None, byref(size), byref(value)
+    )
+    return value.value if status == 0 else None
+
+
+def mic_in_use_by_others(exclude_pids: frozenset[int] | set[int] = frozenset()) -> bool | None:
+    """True if a process other than us still runs audio *input* — i.e. the
+    call app still holds the microphone. This is the meeting-end signal that
+    keeps working while our own recorder has the input device open (which
+    makes the device-level `mic_in_use` permanently True for the session).
+
+    Uses the macOS 14+ per-process audio objects
+    (kAudioHardwarePropertyProcessObjectList 'prs#',
+    kAudioProcessPropertyPID 'ppid', kAudioProcessPropertyIsRunningInput
+    'piri'). Returns None when the API is unavailable (older macOS) or errors
+    — callers must then fall back to the silence timeout. `exclude_pids`
+    names our own helper children (the system-audio tap) on top of this
+    process, which must never count as "someone else on the mic"."""
+    processes = _get_object_list(_SYSTEM_OBJECT, "prs#")  # ...ProcessObjectList
+    if processes is None:
+        return None
+    own = {os.getpid(), *exclude_pids}
+    for proc_obj in processes:
+        running = _get_u32_property(proc_obj, "piri")  # ...IsRunningInput
+        if not running:
+            continue
+        pid = _get_pid_property(proc_obj, "ppid")  # ...PropertyPID
+        if pid is not None and pid not in own:
+            return True
+    return False
 
 
 def zoom_meeting_active() -> bool:

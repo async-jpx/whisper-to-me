@@ -396,6 +396,11 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
+.status-prompting {
+  background: var(--accent);
+  animation: pulse-watching 0.9s ease-in-out infinite;
+}
+
 @keyframes pulse-recording {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -908,6 +913,47 @@ body {
 
 .stamp-link:hover {
   text-decoration: underline;
+}
+
+/* ---------- meeting prompt (Notion-style "record this meeting?") ---------- */
+
+.meeting-prompt {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  z-index: 110;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 0.85rem 1rem;
+  width: 20rem;
+  max-width: calc(100vw - 2.5rem);
+}
+
+.meeting-prompt-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.meeting-prompt-title {
+  margin: 0.45rem 0 0.7rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 /* ---------- toasts ---------- */

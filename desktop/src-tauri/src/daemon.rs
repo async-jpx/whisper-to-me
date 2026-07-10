@@ -55,12 +55,16 @@ pub fn healthy() -> bool {
 }
 
 pub fn api_post(path: &str) {
+    api_post_body(path, "{}".to_string());
+}
+
+pub fn api_post_body(path: &str, body: String) {
     let url = format!("{}{path}", base_url());
     std::thread::spawn(move || {
         let _ = ureq::post(&url)
             .timeout(Duration::from_secs(5))
             .set("Content-Type", "application/json")
-            .send_string("{}");
+            .send_string(&body);
     });
 }
 
@@ -219,6 +223,9 @@ fn mark_online(app: &AppHandle, online: bool) {
             status.mode = None;
         }
     }
+    if !online {
+        crate::prompt::hide(app); // never leave a stale prompt floating
+    }
     crate::tray::refresh(app);
 }
 
@@ -247,12 +254,29 @@ fn handle_event(app: &AppHandle, evt: &Value) {
                 status.elapsed_base = evt.get("elapsed_s").and_then(Value::as_f64).unwrap_or(0.0);
                 status.received = Some(Instant::now());
             }
-            if prev_state == "watching" && new_state == "recording" {
+            if (prev_state == "watching" || prev_state == "prompting")
+                && new_state == "recording"
+            {
                 notify(
                     app,
                     "Meeting detected — recording",
                     title.as_deref().unwrap_or(""),
                 );
+            }
+            // The Notion-style overlay: visible exactly while the daemon is
+            // asking record/ignore. Its buttons talk to the daemon directly;
+            // the shell only mirrors visibility off the status feed.
+            if new_state == "prompting" {
+                if prev_state != "prompting" {
+                    notify(
+                        app,
+                        "Meeting detected",
+                        title.as_deref().unwrap_or("Record it?"),
+                    );
+                }
+                crate::prompt::show(app);
+            } else {
+                crate::prompt::hide(app);
             }
             crate::tray::refresh(app);
         }

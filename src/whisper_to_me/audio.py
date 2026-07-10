@@ -85,6 +85,13 @@ class Recorder:
         self.block_listener = None  # called with every raw block, None at end
         self.preprocess = None      # block -> block, applied before chunking
 
+    @property
+    def helper_pid(self) -> int | None:
+        """PID of a child process this source spawned to capture audio, if
+        any — watch.mic_in_use_by_others must not count our own helpers as
+        'someone else on the microphone'."""
+        return None
+
     def _callback(self, indata, frames, time_info, status) -> None:
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
         self._blocks.put(mono.copy())
@@ -252,6 +259,10 @@ class SystemAudioTap(Recorder):
 
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def helper_pid(self) -> int | None:
+        return self._proc.pid if self.alive() else None
 
 
 class FileRecorder(Recorder):

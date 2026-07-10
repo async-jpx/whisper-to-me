@@ -197,6 +197,21 @@
     </div>
   </div>
 
+  <div id="meeting-prompt" class="meeting-prompt" hidden>
+    <div class="meeting-prompt-head">
+      <span class="status-dot status-prompting"></span>
+      <span>Meeting detected</span>
+    </div>
+    <div id="meeting-prompt-title" class="meeting-prompt-title"></div>
+    <div class="meeting-prompt-actions">
+      <button id="meeting-ignore-btn" class="btn btn-ghost btn-sm">Ignore</button>
+      <button id="meeting-record-btn" class="btn btn-primary btn-sm">
+        <span class="rec-glyph" aria-hidden="true"></span>
+        <span>Record</span>
+      </button>
+    </div>
+  </div>
+
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="/static/vendor/markdown-it.min.js"></script>
