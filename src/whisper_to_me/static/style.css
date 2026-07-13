@@ -1108,6 +1108,23 @@ body {
   color: var(--text-secondary);
 }
 
+.modal-message {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  margin: 0;
+}
+
+#confirm-modal .modal-card {
+  width: min(28rem, 100%);
+}
+
+#confirm-ok.btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
 /* ---------- settings: connections ---------- */
 
 #settings-modal .modal-card {

@@ -83,6 +83,10 @@
     saveBtn: document.getElementById("save-btn"),
     cancelBtn: document.getElementById("cancel-btn"),
     toasts: document.getElementById("toasts"),
+    confirmModal: document.getElementById("confirm-modal"),
+    confirmMessage: document.getElementById("confirm-message"),
+    confirmCancel: document.getElementById("confirm-cancel"),
+    confirmOk: document.getElementById("confirm-ok"),
   };
 
   // ---------- inline icons (feather-style SVG paths; no external assets) ----------
@@ -163,6 +167,36 @@
       setTimeout(() => node.remove(), 250);
     }, 4000);
   }
+
+  // In-app replacement for window.confirm(): the desktop shell's embedded
+  // webview doesn't render native JS confirm dialogs, so confirm() silently
+  // resolves falsy with no visible prompt. Resolves true/false like confirm().
+  let confirmResolve = null;
+  function closeConfirm(result) {
+    el.confirmModal.hidden = true;
+    if (confirmResolve) {
+      const resolve = confirmResolve;
+      confirmResolve = null;
+      resolve(result);
+    }
+  }
+  function confirmDialog(message, { danger = false } = {}) {
+    el.confirmMessage.textContent = message;
+    el.confirmOk.classList.toggle("btn-danger", danger);
+    el.confirmModal.hidden = false;
+    el.confirmOk.focus();
+    return new Promise((resolve) => {
+      confirmResolve = resolve;
+    });
+  }
+  el.confirmCancel.addEventListener("click", () => closeConfirm(false));
+  el.confirmOk.addEventListener("click", () => closeConfirm(true));
+  el.confirmModal.addEventListener("click", (evt) => {
+    if (evt.target === el.confirmModal) closeConfirm(false); // backdrop click
+  });
+  document.addEventListener("keydown", (evt) => {
+    if (evt.key === "Escape" && !el.confirmModal.hidden) closeConfirm(false);
+  });
 
   // ---------- markdown rendering (vendored markdown-it, no CDN) ----------
   // html:false keeps raw HTML in notes escaped — content comes from speech
@@ -624,7 +658,11 @@
   }
 
   async function deleteNote(note) {
-    if (!confirm(`Delete \u201c${note.title}\u201d?\n\nThis permanently removes the note file.`)) return;
+    const ok = await confirmDialog(
+      `Delete \u201c${note.title}\u201d?\n\nThis permanently removes the note file.`,
+      { danger: true }
+    );
+    if (!ok) return;
     const resp = await fetch(`/api/notes/${encodeURIComponent(note.name)}`, {
       method: "DELETE",
     }).catch(() => null);
@@ -654,7 +692,8 @@
   }
 
   async function deleteArchivedNote(note) {
-    if (!confirm(`Delete \u201c${note.title}\u201d permanently?`)) return;
+    const ok = await confirmDialog(`Delete \u201c${note.title}\u201d permanently?`, { danger: true });
+    if (!ok) return;
     const resp = await fetch(`/api/archived/${encodeURIComponent(note.name)}`, {
       method: "DELETE",
     }).catch(() => null);
@@ -717,7 +756,7 @@
   }
 
   async function openNote(name) {
-    if (editorDirty() && !confirm("Discard your unsaved edits?")) return;
+    if (editorDirty() && !(await confirmDialog("Discard your unsaved edits?"))) return;
     try {
       const mdText = await fetchNoteContent(name);
       state.currentNote = name;
@@ -884,8 +923,8 @@
   }
 
   el.editBtn.addEventListener("click", enterEditMode);
-  el.cancelBtn.addEventListener("click", () => {
-    if (editorDirty() && !confirm("Discard your unsaved edits?")) return;
+  el.cancelBtn.addEventListener("click", async () => {
+    if (editorDirty() && !(await confirmDialog("Discard your unsaved edits?"))) return;
     exitEditMode();
   });
   el.saveBtn.addEventListener("click", saveEdit);
@@ -1010,7 +1049,7 @@
     closeExportMenu();
     const title = noteTitleFromMd(state.currentNoteMd || "") || state.currentNote;
     // The one action that sends data off this machine — spell it out.
-    const ok = confirm(
+    const ok = await confirmDialog(
       `Send this entire note — “${title}” (title, date, attendees, summary and ` +
         `full transcript, exactly as shown) — to your Notion database via ` +
         `api.notion.com?\n\nThis is the only whisper-to-me action that sends ` +
