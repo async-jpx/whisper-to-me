@@ -606,6 +606,10 @@ body {
   margin-bottom: 0.5rem;
 }
 
+.scratchpad .editor-toolbar {
+  margin-bottom: 0.4rem;
+}
+
 #scratchpad {
   flex: 1;
   resize: none;
@@ -718,8 +722,45 @@ body {
 
 .editor-split {
   display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.editor-panes {
+  display: flex;
   gap: 1.5rem;
   align-items: stretch;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.editor-tool {
+  min-width: 1.9rem;
+  height: 1.9rem;
+  padding: 0 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.editor-tool:hover {
+  background: var(--bg-hover, var(--bg));
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.editor-tool-sep {
+  width: 1px;
+  height: 1.1rem;
+  background: var(--border);
+  margin: 0 0.35rem;
 }
 
 .note-editor {

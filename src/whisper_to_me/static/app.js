@@ -809,10 +809,12 @@
 
   el.noteEditor.addEventListener("input", schedulePreview);
 
-  // Insert text at the caret, keeping the browser's undo stack when possible
-  // (execCommand is deprecated but still the only undo-preserving path).
-  function editorInsert(text) {
-    const ta = el.noteEditor;
+  // Insert text at the caret of `ta`, keeping the browser's undo stack when
+  // possible (execCommand is deprecated but still the only undo-preserving
+  // path). The fallback path re-fires "input" so each textarea's own listener
+  // (preview refresh / scratchpad autosave) still runs.
+  function editorInsert(ta, text) {
+    ta.focus();
     let done = false;
     try {
       done = text
@@ -823,8 +825,8 @@
     }
     if (!done) {
       ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    schedulePreview();
   }
 
   // "- ", "* ", "1. ", "- [ ] "… — the prefixes the editor auto-continues.
@@ -836,18 +838,103 @@
     return [start, nl === -1 ? ta.value.length : nl];
   }
 
-  el.noteEditor.addEventListener("keydown", (evt) => {
-    const ta = el.noteEditor;
+  // Toggles `mark` (e.g. "**" / "*") around the selection: wraps plain text,
+  // unwraps when the selection is already wrapped or sits just inside the
+  // marks — so Bold twice is a no-op, not "****text****".
+  function toggleWrap(ta, mark) {
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const sel = ta.value.slice(start, end);
+    if (sel.length >= mark.length * 2 && sel.startsWith(mark) && sel.endsWith(mark)) {
+      const inner = sel.slice(mark.length, sel.length - mark.length);
+      editorInsert(ta, inner);
+      ta.selectionStart = start;
+      ta.selectionEnd = start + inner.length;
+      return;
+    }
+    if (
+      start >= mark.length &&
+      ta.value.slice(start - mark.length, start) === mark &&
+      ta.value.slice(end, end + mark.length) === mark
+    ) {
+      ta.selectionStart = start - mark.length;
+      ta.selectionEnd = end + mark.length;
+      editorInsert(ta, sel);
+      ta.selectionStart = start - mark.length;
+      ta.selectionEnd = start - mark.length + sel.length;
+      return;
+    }
+    editorInsert(ta, mark + sel + mark);
+    ta.selectionStart = start + mark.length;
+    ta.selectionEnd = start + mark.length + sel.length;
+  }
 
-    // Cmd/Ctrl+B / I: wrap the selection in **bold** / *italics*.
+  // All lines touched by the current selection (not just the caret line) —
+  // list toggling applies to every selected line, like Notion/Obsidian.
+  function selectedLineBounds(ta) {
+    const start = ta.value.lastIndexOf("\n", ta.selectionStart - 1) + 1;
+    let end = ta.value.indexOf("\n", ta.selectionEnd);
+    return [start, end === -1 ? ta.value.length : end];
+  }
+
+  function lineHasMarkerKind(line, kind) {
+    const m = line.match(LIST_PREFIX_RE);
+    if (!m) return false;
+    if (kind === "task") return !!m[4];
+    if (kind === "ordered") return /^\d+[.)]$/.test(m[2]);
+    return /^[-*+]$/.test(m[2]) && !m[4];
+  }
+
+  // Toggles a bullet / numbered / checklist marker on every selected line —
+  // stripping it if every line already has that kind, else applying it
+  // (replacing any other list marker so lines don't end up double-prefixed).
+  function toggleListMarker(ta, kind) {
+    const [start, end] = selectedLineBounds(ta);
+    const lines = ta.value.slice(start, end).split("\n");
+    const allHaveKind = lines.every((line) => !line.trim() || lineHasMarkerKind(line, kind));
+    const next = lines
+      .map((line, i) => {
+        if (!line.trim()) return line;
+        const m = line.match(LIST_PREFIX_RE);
+        const indent = m ? m[1] : (line.match(/^\s*/) || [""])[0];
+        const rest = m ? line.slice(m[0].length) : line.slice(indent.length);
+        if (allHaveKind) return indent + rest;
+        if (kind === "task") return `${indent}- [ ] ${rest}`;
+        if (kind === "ordered") return `${indent}${i + 1}. ${rest}`;
+        return `${indent}- ${rest}`;
+      })
+      .join("\n");
+    ta.selectionStart = start;
+    ta.selectionEnd = end;
+    editorInsert(ta, next);
+    ta.selectionStart = start;
+    ta.selectionEnd = start + next.length;
+  }
+
+  // Wire every formatting toolbar (note editor + live scratchpad) to the
+  // textarea named by its data-for attribute.
+  document.querySelectorAll(".editor-toolbar").forEach((bar) => {
+    const ta = document.getElementById(bar.dataset.for);
+    bar.querySelectorAll(".editor-tool").forEach((btn) => {
+      // mousedown would blur the textarea and lose its selection.
+      btn.addEventListener("mousedown", (evt) => evt.preventDefault());
+      btn.addEventListener("click", () => {
+        const cmd = btn.dataset.cmd;
+        if (cmd === "bold") toggleWrap(ta, "**");
+        else if (cmd === "italic") toggleWrap(ta, "*");
+        else toggleListMarker(ta, cmd);
+      });
+    });
+  });
+
+  // Markdown typing niceties, shared by the note editor and the scratchpad.
+  function markdownKeydown(evt) {
+    const ta = evt.currentTarget;
+
+    // Cmd/Ctrl+B / I: toggle **bold** / *italics* on the selection.
     if ((evt.metaKey || evt.ctrlKey) && (evt.key === "b" || evt.key === "i")) {
       evt.preventDefault();
-      const wrap = evt.key === "b" ? "**" : "*";
-      const start = ta.selectionStart;
-      const sel = ta.value.slice(start, ta.selectionEnd);
-      editorInsert(wrap + sel + wrap);
-      ta.selectionStart = start + wrap.length;
-      ta.selectionEnd = start + wrap.length + sel.length;
+      toggleWrap(ta, evt.key === "b" ? "**" : "*");
       return;
     }
 
@@ -863,13 +950,13 @@
       evt.preventDefault();
       if (!line.slice(m[0].length)) {
         ta.selectionStart = lineStart; // empty item: remove the marker
-        editorInsert("");
+        editorInsert(ta, "");
         return;
       }
       let marker = m[2];
       const num = marker.match(/^(\d+)([.)])$/);
       if (num) marker = `${Number(num[1]) + 1}${num[2]}`;
-      editorInsert("\n" + m[1] + marker + m[3] + (m[4] ? "[ ] " : ""));
+      editorInsert(ta, "\n" + m[1] + marker + m[3] + (m[4] ? "[ ] " : ""));
       return;
     }
 
@@ -885,19 +972,22 @@
           if (removed === 0) return;
           ta.selectionStart = lineStart;
           ta.selectionEnd = lineStart + removed;
-          editorInsert("");
+          editorInsert(ta, "");
           const pos = Math.max(lineStart, caret - removed);
           ta.selectionStart = ta.selectionEnd = pos;
         } else {
           ta.selectionStart = ta.selectionEnd = lineStart;
-          editorInsert("  ");
+          editorInsert(ta, "  ");
           ta.selectionStart = ta.selectionEnd = caret + 2;
         }
       } else if (!evt.shiftKey) {
-        editorInsert("  ");
+        editorInsert(ta, "  ");
       }
     }
-  });
+  }
+
+  el.noteEditor.addEventListener("keydown", markdownKeydown);
+  el.scratchpad.addEventListener("keydown", markdownKeydown);
 
   async function saveEdit() {
     const content = el.noteEditor.value;

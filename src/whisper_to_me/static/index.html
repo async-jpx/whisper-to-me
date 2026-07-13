@@ -74,6 +74,14 @@
           <div id="transcript" class="transcript"></div>
           <div class="scratchpad">
             <div class="scratchpad-label">Your notes shape the summary</div>
+            <div class="editor-toolbar" role="toolbar" aria-label="Formatting" data-for="scratchpad">
+              <button type="button" class="editor-tool" data-cmd="bold" title="Bold (Cmd/Ctrl+B)"><strong>B</strong></button>
+              <button type="button" class="editor-tool" data-cmd="italic" title="Italic (Cmd/Ctrl+I)"><em>I</em></button>
+              <span class="editor-tool-sep"></span>
+              <button type="button" class="editor-tool" data-cmd="bullet" title="Bullet list">&bull;</button>
+              <button type="button" class="editor-tool" data-cmd="ordered" title="Numbered list">1.</button>
+              <button type="button" class="editor-tool" data-cmd="task" title="Checklist">&#9745;</button>
+            </div>
             <textarea id="scratchpad" spellcheck="false"
               placeholder="Type your own notes here — each point is expanded in the final summary…"></textarea>
           </div>
@@ -105,8 +113,18 @@
           </div>
           <article id="note-view" class="note-view"></article>
           <div id="editor-split" class="editor-split" hidden>
-            <textarea id="note-editor" class="note-editor" spellcheck="false"></textarea>
-            <article id="editor-preview" class="note-view editor-preview" aria-label="Preview"></article>
+            <div class="editor-toolbar" role="toolbar" aria-label="Formatting" data-for="note-editor">
+              <button type="button" class="editor-tool" data-cmd="bold" title="Bold (Cmd/Ctrl+B)"><strong>B</strong></button>
+              <button type="button" class="editor-tool" data-cmd="italic" title="Italic (Cmd/Ctrl+I)"><em>I</em></button>
+              <span class="editor-tool-sep"></span>
+              <button type="button" class="editor-tool" data-cmd="bullet" title="Bullet list">&bull;</button>
+              <button type="button" class="editor-tool" data-cmd="ordered" title="Numbered list">1.</button>
+              <button type="button" class="editor-tool" data-cmd="task" title="Checklist">&#9745;</button>
+            </div>
+            <div class="editor-panes">
+              <textarea id="note-editor" class="note-editor" spellcheck="false"></textarea>
+              <article id="editor-preview" class="note-view editor-preview" aria-label="Preview"></article>
+            </div>
           </div>
         </div>
         <div id="chat-view" class="chat-view" hidden>
