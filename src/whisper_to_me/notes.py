@@ -139,9 +139,10 @@ def save_note(
     notes_dir: Path = DEFAULT_NOTES_DIR,
     started: datetime | None = None,
     attendees: list[str] | None = None,
+    user_notes: str = "",
 ) -> Path:
-    """Write a meeting note (frontmatter + summary + timestamped transcript)
-    and return its path."""
+    """Write a meeting note (frontmatter + summary + your live notes +
+    timestamped transcript) and return its path."""
     started = started or datetime.now()
     notes_dir.mkdir(parents=True, exist_ok=True)
     path = note_path(title, started, notes_dir)
@@ -154,6 +155,8 @@ def save_note(
     ]
     if summary:
         body += [summary, "", "---", ""]
+    if user_notes.strip():
+        body += ["## Your Notes", "", user_notes.strip(), "", "---", ""]
     body += ["## Transcript", ""]
     body += [f"**[{ts}]** {text}" for ts, text in transcript_lines] or ["*(empty)*"]
     body.append("")

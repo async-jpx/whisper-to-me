@@ -414,7 +414,13 @@ def summarize_and_save(
         console.print(f"[dim]Inferred title:[/dim] [bold]{final_title}[/bold]")
 
     path = notes.save_note(
-        final_title, transcript_lines, summary, notes_dir, started, attendees=attendees
+        final_title,
+        transcript_lines,
+        summary,
+        notes_dir,
+        started,
+        attendees=attendees,
+        user_notes=user_notes,
     )
     # The live journal was created under the placeholder title; now that the
     # final note is safely on disk, drop the stale copy. Never delete before
