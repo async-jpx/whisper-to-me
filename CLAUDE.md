@@ -19,7 +19,7 @@ any change that widens this path.
 uv sync                     # install deps (Python 3.12, managed by uv)
 uv run wtm devices          # list audio inputs
 uv run wtm record           # record + live-transcribe + summarize (Ctrl-C stops)
-uv run wtm watch            # auto-detect meetings, Notion-style
+uv run wtm watch            # auto-detect meetings, Notion-style (CLI auto-records)
 uv run wtm transcribe F     # audio file -> note
 uv run wtm summarize F [--user-notes F] [--template NAME]  # re-summarize a transcript
 uv run wtm ask "QUESTION"   # local RAG over all notes: cited answer from Ollama
@@ -28,7 +28,10 @@ uv run wtm templates        # list meeting templates + where to add your own
 uv run wtm simulate --mic F [--system F] [--diarize]  # replay files through the live pipeline
 uv run wtm export [--obsidian PATH]  # copy notes into an Obsidian vault (local files)
 uv run wtm push NOTE.md     # push ONE note to Notion (opt-in + confirmed; see above)
-uv run wtm serve / wtm ui   # local daemon (127.0.0.1:8737) / + open web UI
+uv run wtm serve / wtm ui   # local daemon (127.0.0.1:8737) / + open web UI —
+                            # watches from boot + prompts before recording;
+                            # --no-watch / --auto-record (or [watch] in
+                            # config.toml) restore the old behaviors
 uv run ruff check src/     # lint (also runs via hook on edits)
 uv run pytest tests/       # unit + API tests
 uv sync --extra diarize    # optional: speaker diarization stack (torch — heavy)
@@ -100,23 +103,37 @@ export.py      Obsidian vault copies: frontmatter retrofit for the
 notion_export.py  the sanctioned Notion push: markdown→blocks, page create;
                user-initiated only (wtm push / UI button), preview first
 watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process;
-               title hints from Calendar.app / Zoom window (permission-gated)
+               mic_in_use_by_others (macOS 14+ process objects) = the meeting-
+               END signal while we hold the mic ourselves; title hints from
+               Calendar.app / Zoom window (permission-gated). See
+               docs/meeting-detection.md for the research + design
 session.py     orchestration: sources ("You" mic / "Others" system), workers,
                per-segment timestamps, turn-merged transcript, summarize_and_save
-runner.py      watch_loop: meeting-detection loop shared by CLI and daemon
+runner.py      watch_loop: meeting-detection loop shared by CLI and daemon;
+               confirm mode (daemon default) holds a "prompting" state +
+               meeting_detected event until accept/ignore; recordings auto-
+               stop on Zoom-helper exit / mic release / silence timeout
 server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
                fan-out; single SessionManager owns the one active session;
+               auto-starts watch on boot (ServerOptions.auto_watch) and routes
+               prompt answers via POST /api/watch/respond {"accept": bool};
+               manual record/simulate preempt an idle (watching/prompting —
+               never recording) watch and re-arm it when the session ends;
                /api/settings connects Obsidian/Notion by writing config.toml
                (save_config) — no network, the token never leaves via the wire
 search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
                has match_all (AND, sidebar default) vs OR (chat/briefs) mode
 static/        vendored web UI (no CDN); app.js supports #note=<name> deep
                links, a live scratchpad, template picker, chat view, briefs,
-               and a Settings → Connections modal (connect Obsidian/Notion)
+               a Settings → Connections modal (connect Obsidian/Notion), and
+               the floating meeting prompt; prompt.html is the same prompt as
+               a standalone widget page for the desktop overlay window
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →
-               http://127.0.0.1:8737, tray mirrors /api/events, notifications
+               http://127.0.0.1:8737, tray mirrors /api/events, notifications;
+               prompt.rs shows/hides the always-on-top meeting-prompt overlay
+               (loads /static/prompt.html) on the "prompting" state
 ```
 
 Key invariants:
@@ -217,6 +234,15 @@ Key invariants:
   language lock-on (auto-detect flaps between languages on accented speech).
 - Energy gate `SILENCE_RMS = 0.004` is deliberately permissive — Whisper's own
   VAD rejects noise downstream. Don't "fix" it upward without a listening test.
+- **Mic-release auto-stop must never count ourselves** (watch.py/runner.py):
+  `mic_in_use_by_others` excludes our pid *and* every `Recorder.helper_pid`
+  (the system-audio tap is a child process) — forget one and every watch
+  recording runs forever (or worse, our own tap keeps "the meeting" alive).
+  The signal also only arms after another process was actually seen on the
+  mic (`call_app_seen`), and `None` (API missing, pre-macOS-14) must stay "no
+  signal → silence timeout", never a stop. On "ignore", the runner emits
+  status `watching` *before* waiting out the meeting — the prompt popups hide
+  on that event; hold the state and the widget lingers for the whole meeting.
 - **Echo filter must stay onset-aligned** (dedup.py): a genuine quick reply
   often reuses the other speaker's words ("Yes, it moved to Friday" right
   after "I think it was moved to Friday") and *will* fuzzy-match. Only a

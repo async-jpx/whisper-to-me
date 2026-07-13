@@ -27,7 +27,9 @@ NOTE = """\
 @pytest.fixture()
 def client(tmp_path):
     (tmp_path / "note.md").write_text(NOTE, encoding="utf-8")
-    app = create_app(ServerOptions(notes_dir=tmp_path))
+    # auto_watch off: these tests exercise endpoints from a known-idle daemon
+    # (the auto-watch default gets its own dedicated test below).
+    app = create_app(ServerOptions(notes_dir=tmp_path, auto_watch=False))
     with TestClient(app) as client:
         client.notes_dir = tmp_path
         client.manager = app.state.manager
@@ -521,3 +523,131 @@ def test_record_lifecycle_states(client, monkeypatch):
 
 def test_stop_record_while_idle_409(client):
     assert client.post("/api/record/stop").status_code == 409
+
+
+def test_manual_record_preempts_watch_and_resumes(client, monkeypatch):
+    """With watch-by-default, 'New meeting' must not 409: an idle watch
+    yields to the manual recording and re-arms itself once the note is
+    saved."""
+    import whisper_to_me.server as server
+
+    watch_runs = []
+
+    def fake_watch_loop(get_transcriber, opts, events=None, stop_event=None, **kwargs):
+        watch_runs.append(True)
+        events({"type": "status", "state": "watching", "title": None, "started": None})
+        stop_event.wait(10)
+
+    def fake_record_session(transcriber, title, notes_dir, **kwargs):
+        kwargs["events"](
+            {
+                "type": "status",
+                "state": "recording",
+                "title": title,
+                "started": kwargs["started"].isoformat(),
+            }
+        )
+        kwargs["stop_event"].wait(10)
+        return [], kwargs["started"]
+
+    monkeypatch.setattr(server, "watch_loop", fake_watch_loop)
+    monkeypatch.setattr(server, "record_session", fake_record_session)
+    monkeypatch.setattr(
+        server, "summarize_and_save", lambda *a, **kw: a[3] / "unused.md"
+    )
+    client.manager._transcriber = object()  # skip the Whisper model load
+
+    assert client.post("/api/watch/start").status_code == 202
+    _wait_for_state(client, "watching")
+    assert len(watch_runs) == 1
+
+    # New meeting while watching: preempts instead of 409ing
+    assert client.post("/api/record/start", json={"title": "Manual"}).status_code == 202
+    _wait_for_state(client, "recording")
+
+    # …and stopping the manual recording re-arms the watch
+    assert client.post("/api/record/stop").status_code == 202
+    _wait_for_state(client, "watching")
+    assert len(watch_runs) == 2
+
+    assert client.post("/api/watch/stop").status_code == 202
+    _wait_for_state(client, "idle")
+
+
+# ---------- watch prompt flow (watch_loop is faked: no audio devices) ----
+
+
+def test_watch_respond_while_idle_409(client):
+    assert client.post("/api/watch/respond", json={"accept": True}).status_code == 409
+
+
+def test_watch_prompt_accept_roundtrip(client, monkeypatch):
+    """watch start -> prompting; /api/watch/respond hands the decision to the
+    loop; stop returns the daemon to idle and expires the prompt."""
+    import threading
+    import time
+
+    import whisper_to_me.server as server
+
+    got = {}
+    answered = threading.Event()
+
+    def fake_watch_loop(
+        get_transcriber, opts, events=None, stop_event=None,
+        scratchpad=None, clear_scratchpad=None, decision=None,
+    ):
+        got["confirm"] = opts.confirm
+        events({"type": "status", "state": "prompting", "title": "Standup", "started": None})
+        deadline = time.monotonic() + 5
+        choice = None
+        while choice is None and time.monotonic() < deadline:
+            choice = decision()
+            time.sleep(0.01)
+        got["choice"] = choice
+        answered.set()
+        stop_event.wait(5)
+
+    monkeypatch.setattr(server, "watch_loop", fake_watch_loop)
+
+    assert client.post("/api/watch/start").status_code == 202
+    _wait_for_state(client, "prompting")
+    status = client.get("/api/status").json()
+    assert status["mode"] == "watch" and status["title"] == "Standup"
+
+    assert client.post("/api/watch/respond", json={"accept": True}).status_code == 202
+    assert answered.wait(5)
+    assert got["choice"] == "accept"
+    assert got["confirm"] is True  # the daemon default asks before recording
+
+    assert client.post("/api/watch/stop").status_code == 202
+    _wait_for_state(client, "idle")
+    assert client.post("/api/watch/respond", json={"accept": True}).status_code == 409
+
+
+def test_auto_watch_starts_on_startup(tmp_path, monkeypatch):
+    """The daemon's resting state is watching: create_app with the default
+    auto_watch starts a watch session during startup — without loading the
+    Whisper model (get_transcriber must stay uncalled until a recording)."""
+    import threading
+
+    import whisper_to_me.server as server
+
+    started = threading.Event()
+    transcriber_loads = []
+
+    def fake_watch_loop(
+        get_transcriber, opts, events=None, stop_event=None, **kwargs
+    ):
+        transcriber_loads.append(get_transcriber)  # captured, never called
+        events({"type": "status", "state": "watching", "title": None, "started": None})
+        started.set()
+        stop_event.wait(5)
+
+    monkeypatch.setattr(server, "watch_loop", fake_watch_loop)
+    app = create_app(ServerOptions(notes_dir=tmp_path))  # auto_watch default: on
+    with TestClient(app) as client:
+        assert started.wait(5)
+        assert client.get("/api/status").json()["state"] == "watching"
+        assert app.state.manager._transcriber is None  # Whisper not loaded
+        assert client.post("/api/watch/stop").status_code == 202
+        _wait_for_state(client, "idle")

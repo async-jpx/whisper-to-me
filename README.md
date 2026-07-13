@@ -55,6 +55,11 @@ the current Calendar.app event or the Zoom window topic (local, permission
 gated); otherwise a title is inferred from the conversation by the local
 summarizer, and the note file is renamed to match.
 
+Watch recordings end on their own when the meeting does: Zoom's in-call
+helper exits, the call app releases the microphone (macOS 14+), or nothing
+has been heard for `--silence-timeout` seconds (default 120). See
+`docs/meeting-detection.md` for how the detection works.
+
 First run downloads the Whisper model once; everything afterwards is offline.
 macOS will ask for microphone permission for your terminal on first recording.
 
@@ -86,6 +91,18 @@ headphones. Lines from both sources are merged by time.
 
 `uv run wtm ui` starts a local daemon (FastAPI, loopback only) and opens the
 web UI: live transcript, searchable and editable notes, one-click record/watch.
+
+The daemon watches for meetings from the moment it starts and — like Notion —
+**asks before recording**: a small popup (web UI card, desktop overlay widget,
+and tray menu entries) offers Record / Ignore whenever a meeting is detected.
+`wtm serve --no-watch` disables watching on boot, `--auto-record` records
+without asking; the same lives in `~/.config/whisper-to-me/config.toml`:
+
+```toml
+[watch]
+auto_start = true   # watch for meetings from boot
+confirm = true      # ask (prompt) before recording
+```
 
 There is also a menu-bar desktop app (Tauri) wrapping the same daemon:
 

@@ -60,6 +60,12 @@ class ServerOptions:
     silence_timeout: float = 120.0
     template: str | None = None
     diarize: bool = False
+    # Watching is the daemon's resting state (Notion-style): start watching on
+    # boot, and ask (prompt) before recording a detected meeting instead of
+    # auto-recording. `wtm serve --no-watch` / `--auto-record` and the
+    # config.toml [watch] table override these.
+    auto_watch: bool = True
+    confirm_watch: bool = True
 
 
 class BusyError(RuntimeError):
@@ -88,12 +94,14 @@ class SessionManager:
 
     def __init__(self, opts: ServerOptions) -> None:
         self.opts = opts
-        # idle | starting | recording | watching | stopping | summarizing.
-        # "starting" covers the gap between the start request and audio
-        # actually flowing (first record also loads the Whisper model here);
-        # "stopping" covers the drain after a stop request (remaining audio is
-        # still being transcribed). Both exist so the UI can show honest
-        # feedback instead of a button that appears to do nothing.
+        # idle | starting | recording | watching | prompting | stopping |
+        # summarizing. "starting" covers the gap between the start request and
+        # audio actually flowing (first record also loads the Whisper model
+        # here); "prompting" is a watch session holding a detected meeting
+        # while the user decides record/ignore; "stopping" covers the drain
+        # after a stop request (remaining audio is still being transcribed).
+        # These exist so the UI can show honest feedback instead of a button
+        # that appears to do nothing.
         self.state = "idle"
         self.title: str | None = None
         self.started: datetime | None = None
@@ -107,6 +115,8 @@ class SessionManager:
         self._clients_lock = threading.Lock()
         self._lines: list[dict] = []  # replay buffer for late-joining clients
         self._scratchpad: str = ""  # note-taker's live notes (Phase 4.2)
+        self._watch_decision: str | None = None  # pending prompt answer
+        self._resume_watch = False  # re-arm watch after a preempting session
 
     def _get_transcriber(self):
         with self._transcriber_lock:
@@ -186,9 +196,11 @@ class SessionManager:
         if event.get("type") == "status":
             with self._lock:
                 # A stop has been requested: the session's own progress events
-                # ("recording"/"watching") must not flip the state back — the
-                # wind-down is what the user is watching now.
-                if self.state == "stopping" and event["state"] in ("recording", "watching"):
+                # ("recording"/"watching"/"prompting") must not flip the state
+                # back — the wind-down is what the user is watching now.
+                if self.state == "stopping" and event["state"] in (
+                    "recording", "watching", "prompting",
+                ):
                     return
                 self.state = event["state"]
                 self.title = event.get("title")
@@ -237,12 +249,39 @@ class SessionManager:
                 self._sink({"type": "error", "message": str(exc)})
             finally:
                 self._reset_to_idle()
+                # A manual session that preempted the watch hands the daemon
+                # back to its resting state when it finishes.
+                with self._lock:
+                    resume, self._resume_watch = self._resume_watch, False
+                if resume:
+                    try:
+                        self.start_watch()
+                    except BusyError:
+                        pass  # someone started a new session in the gap
 
         self._thread = threading.Thread(target=guarded, daemon=True)
         self._thread.start()
 
+    def _preempt_watch(self) -> None:
+        """Yield an *idle* watch (watching/prompting — never one that is
+        recording) to a manual record/simulate, remembering to re-arm the
+        watch when that session ends. No-op in any other state."""
+        with self._lock:
+            if self._mode != "watch" or self.state not in ("watching", "prompting"):
+                return
+            thread = self._thread
+            stop_event = self._stop_event
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None:
+            thread.join(timeout=10)  # watch reacts within its poll interval
+        with self._lock:
+            if self.state == "idle":
+                self._resume_watch = True
+
     def start_record(self, title: str | None, template: str | None = None) -> None:
         chosen_template = template or self.opts.template
+        self._preempt_watch()  # "New meeting" wins over an idle watch
         with self._lock:
             if self.state != "idle":
                 raise BusyError(self.state)
@@ -321,12 +360,12 @@ class SessionManager:
             self._stop_event = threading.Event()
             self._lines = []
             self._scratchpad = ""
+            self._watch_decision = None
         self._broadcast_status()
         self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
         stop_event = self._stop_event
 
         def run() -> None:
-            transcriber = self._get_transcriber()
             opts = WatchOptions(
                 title=None,
                 device=self.opts.device,
@@ -341,17 +380,34 @@ class SessionManager:
                 no_summary=False,
                 template=self.opts.template,
                 diarize=self.opts.diarize,
+                confirm=self.opts.confirm_watch,
             )
+            # The transcriber is passed lazily: a daemon that watches from
+            # boot must not hold the Whisper model before a recording starts.
             watch_loop(
-                transcriber,
+                self._get_transcriber,
                 opts,
                 events=self._sink,
                 stop_event=stop_event,
                 scratchpad=self.get_scratchpad,
                 clear_scratchpad=self._clear_scratchpad,
+                decision=self._take_watch_decision,
             )
 
         self._run_in_background(run)
+
+    def _take_watch_decision(self) -> str | None:
+        """Consume the pending prompt answer (watch_loop polls this)."""
+        with self._lock:
+            choice, self._watch_decision = self._watch_decision, None
+            return choice
+
+    def respond_watch(self, accept: bool) -> None:
+        """Answer the meeting prompt — only meaningful while prompting."""
+        with self._lock:
+            if self._mode != "watch" or self.state != "prompting":
+                raise BusyError(self.state)
+            self._watch_decision = "accept" if accept else "ignore"
 
     def stop_watch(self) -> None:
         with self._lock:
@@ -369,6 +425,7 @@ class SessionManager:
         self, mic: str, system: str | None, no_summary: bool, template: str | None = None
     ) -> None:
         chosen_template = template or self.opts.template
+        self._preempt_watch()  # simulations win over an idle watch too
         with self._lock:
             if self.state != "idle":
                 raise BusyError(self.state)
@@ -433,6 +490,10 @@ class NoteContentBody(BaseModel):
 class TaskToggleBody(BaseModel):
     task_index: int
     checked: bool
+
+
+class WatchRespondBody(BaseModel):
+    accept: bool
 
 
 class SimulateBody(BaseModel):
@@ -525,6 +586,17 @@ def create_app(opts: ServerOptions) -> FastAPI:
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    @app.on_event("startup")
+    async def _auto_watch() -> None:
+        # Watching is the resting state: the daemon is useful the moment it
+        # boots, no button press needed. Purely local, and in confirm mode it
+        # never records without an explicit yes.
+        if opts.auto_watch:
+            try:
+                manager.start_watch()
+            except BusyError:
+                pass  # a session already started before startup finished
+
     @app.get("/")
     def index():
         index_html = STATIC_DIR / "index.html"
@@ -578,6 +650,16 @@ def create_app(opts: ServerOptions) -> FastAPI:
             manager.stop_watch()
         except BusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @app.post("/api/watch/respond", status_code=202)
+    def watch_respond(body: WatchRespondBody):
+        """Answer the meeting prompt (state 'prompting'): accept records the
+        detected meeting, ignore skips it until its trigger clears."""
+        try:
+            manager.respond_watch(body.accept)
+        except BusyError as exc:
+            raise HTTPException(status_code=409, detail="no meeting prompt pending") from exc
         return {"ok": True}
 
     @app.post("/api/simulate", status_code=202)

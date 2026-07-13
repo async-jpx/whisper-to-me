@@ -31,6 +31,10 @@
     recordBtnLabel: document.getElementById("record-btn-label"),
     emptyRecordBtn: document.getElementById("empty-record-btn"),
     watchBtn: document.getElementById("watch-btn"),
+    meetingPrompt: document.getElementById("meeting-prompt"),
+    meetingPromptTitle: document.getElementById("meeting-prompt-title"),
+    meetingRecordBtn: document.getElementById("meeting-record-btn"),
+    meetingIgnoreBtn: document.getElementById("meeting-ignore-btn"),
     notesList: document.getElementById("notes-list"),
     searchInput: document.getElementById("search-input"),
     sidebarSearch: document.querySelector(".sidebar-search"),
@@ -365,9 +369,17 @@
       recording: s.title || "Recording",
       stopping: "Finishing — transcribing the last audio…",
       watching: "Watching for meetings…",
+      prompting: s.title ? `Meeting detected — ${s.title}` : "Meeting detected",
       summarizing: "Summarizing…",
     };
     el.statusText.textContent = labels[s.state] || s.state;
+
+    // The Notion-style popup: visible exactly while the daemon holds a
+    // detected meeting open for a record/ignore decision.
+    el.meetingPrompt.hidden = s.state !== "prompting";
+    if (s.state === "prompting") {
+      el.meetingPromptTitle.textContent = s.title || "Meeting";
+    }
 
     if (s.state === "recording" && s.started) {
       const startedMs = Date.parse(s.started);
@@ -379,10 +391,14 @@
     }
 
     const busy = s.state === "stopping" || s.state === "summarizing";
-    el.recordBtn.disabled = busy || s.state === "watching" || recordPending;
-    el.watchBtn.disabled = s.state !== "idle" && s.state !== "watching";
-    el.titleInput.disabled = s.state !== "idle";
-    el.templateSelect.disabled = s.state !== "idle";
+    // While watching, "New meeting" stays live: the daemon preempts the idle
+    // watch for a manual recording (and resumes watching afterwards).
+    el.recordBtn.disabled = busy || s.state === "prompting" || recordPending;
+    el.watchBtn.disabled =
+      s.state !== "idle" && s.state !== "watching" && s.state !== "prompting";
+    const settable = s.state === "idle" || s.state === "watching";
+    el.titleInput.disabled = !settable;
+    el.templateSelect.disabled = !settable;
 
     // The record button doubles as the stop button while a session runs
     // ("starting" included, so a misclick can be cancelled immediately).
@@ -395,7 +411,7 @@
         ? "Stop"
         : "New meeting";
 
-    if (s.state === "watching") {
+    if (s.state === "watching" || s.state === "prompting") {
       el.watchBtn.textContent = "Stop Watching";
       el.watchBtn.classList.add("is-active");
     } else {
@@ -1522,7 +1538,9 @@
   }
 
   function onRecordClick() {
-    if (recordPending || state.status.state === "watching") return;
+    // "New meeting" also works while watching: the daemon preempts the idle
+    // watch, records, and re-arms the watch when the note is saved.
+    if (recordPending) return;
     markRecordPending();
     if (state.status.state === "recording" || state.status.state === "starting") {
       stopRecording();
@@ -1537,7 +1555,7 @@
   el.watchBtn.addEventListener("click", async () => {
     let resp = null;
     try {
-      if (state.status.state === "watching") {
+      if (state.status.state === "watching" || state.status.state === "prompting") {
         resp = await apiPost("/api/watch/stop");
       } else {
         resp = await apiPost("/api/watch/start");
@@ -1554,6 +1572,24 @@
     );
     await resyncStatus();
   });
+
+  // Meeting prompt: answer the daemon's record/ignore question. The popup
+  // itself hides when the next status event flips the state.
+  async function respondToPrompt(accept) {
+    el.meetingRecordBtn.disabled = el.meetingIgnoreBtn.disabled = true;
+    let resp = null;
+    try {
+      resp = await apiPost("/api/watch/respond", { accept });
+    } catch (err) {
+      /* network error: handled below */
+    }
+    el.meetingRecordBtn.disabled = el.meetingIgnoreBtn.disabled = false;
+    if (resp && resp.ok) return;
+    toast(resp && resp.status === 409 ? "That meeting prompt has expired." : "Could not reach the daemon.", "error");
+    await resyncStatus();
+  }
+  el.meetingRecordBtn.addEventListener("click", () => respondToPrompt(true));
+  el.meetingIgnoreBtn.addEventListener("click", () => respondToPrompt(false));
 
   // ---------- WebSocket ----------
 
