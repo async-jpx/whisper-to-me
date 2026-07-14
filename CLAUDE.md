@@ -37,6 +37,14 @@ uv run pytest tests/       # unit + API tests
 uv sync --extra diarize    # optional: speaker diarization stack (torch — heavy)
 ```
 
+Web UI (React source in `webui/`, build output committed):
+
+```sh
+cd webui && npm install     # toolchain (build-time only; nothing loads from the network at runtime)
+cd webui && npm run build   # tsc --noEmit + vite build -> src/whisper_to_me/static/dist (commit it)
+cd webui && npm run dev     # Vite dev server on :5173, /api (incl. WS) proxied to a daemon on 8737
+```
+
 Phase-4 flags: `record`/`watch`/`simulate` take `--diarize` (split "Others"
 into Speaker A/B/C, beta); `record`/`watch`/`simulate`/`transcribe`/`summarize`
 take `--template NAME`; `summarize` also takes `--user-notes FILE`. The UI adds
@@ -123,11 +131,22 @@ server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
                (save_config) — no network, the token never leaves via the wire
 search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
                has match_all (AND, sidebar default) vs OR (chat/briefs) mode
-static/        vendored web UI (no CDN); app.js supports #note=<name> deep
-               links, a live scratchpad, template picker, chat view, briefs,
-               a Settings → Connections modal (connect Obsidian/Notion), and
-               the floating meeting prompt; prompt.html is the same prompt as
-               a standalone widget page for the desktop overlay window
+webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
+               Vite + Zustand, all deps bundled locally (no CDN, no runtime
+               network). src/legacy.css is the original stylesheet verbatim —
+               components reuse its class names for pixel parity; Tailwind
+               utilities (no preflight — it would fight legacy.css) layer on
+               top via @theme tokens. store.ts + ws.ts are the WS-authoritative
+               status model (backoff reconnect, resync-on-focus, recordPending
+               5s failsafe); components cover #note= deep links, live
+               scratchpad, template picker, chat view, briefs, Settings →
+               Connections, export menu (incl. the confirmed Notion push),
+               and the floating meeting prompt
+static/        dist/ — the committed Vite build, served at / (Cache-Control:
+               no-cache; assets are content-hashed) and /static/dist/*; and
+               prompt.html — a standalone hand-written widget page for the
+               desktop overlay, hard-coded as /static/prompt.html in
+               desktop prompt.rs — keep it a plain static file
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →
@@ -209,6 +228,21 @@ Key invariants:
   (templates/default.md): "no template" and `--template default` are asserted
   identical (test_templates). `_synth_system("")` must also reproduce the old
   single-string prompt exactly — the notes/template seams are additive only.
+- **Checkbox DOM order ↔ task_index contract lives in NoteContainer's
+  post-processors** (webui NoteContainer.tsx): the nth
+  `input.task-list-item-checkbox` in DOM order PATCHes the nth task line —
+  it only holds because markdown-it-task-lists' exact output matches the
+  server's `_TASK_RE`. Don't "React-ify" the rendered note: the article is
+  filled imperatively (innerHTML + foldTranscript/anchorStamps) and is
+  deliberately NOT subscribed to `currentNoteMd` — a checkbox toggle
+  refetches the markdown, and re-rendering there collapses the transcript
+  fold and resets scroll. Re-renders happen only on note open
+  (`currentNote`) and save (`noteRenderSeq`).
+- **The webui textarea editor must stay uncontrolled** (NoteContainer edit
+  branch, lib/editing.ts): mutations go through `document.execCommand` —
+  deprecated but the only undo-stack-preserving path; a controlled `value`
+  prop fights it and kills Cmd-Z. The `<MarkdownEditor>` seam is where a
+  real editor (CodeMirror) can swap in later.
 - **Scratchpad sidecar stays out of the notes glob** (`.wtm-scratchpad.txt`,
   server.py): it's crash-safety for the live scratchpad, but it must never be
   a note — it works only because `*.md` globs and `_safe_note_path` exclude it.
