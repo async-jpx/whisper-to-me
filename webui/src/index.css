@@ -1,0 +1,27 @@
+/* whisper-to-me web UI styles.
+   legacy.css is the original hand-authored stylesheet, kept verbatim so the
+   React components (which reuse the same class names) render pixel-identical
+   to the old UI. Tailwind v4 utilities are layered on top for new work —
+   WITHOUT preflight: its resets would fight legacy.css, which was written
+   against browser defaults. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./legacy.css";
+
+/* Design tokens exposed to Tailwind (bg-bg, text-text-secondary, border-border,
+   text-accent, bg-danger-tint, …). `inline` makes utilities emit var(--bg) etc.
+   so the prefers-color-scheme override in legacy.css keeps working. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-hover: var(--bg-hover);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-secondary: var(--text-secondary);
+  --color-accent: var(--accent);
+  --color-accent-tint: var(--accent-tint);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-success: var(--success);
+}
