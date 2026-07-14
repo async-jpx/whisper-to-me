@@ -599,10 +599,14 @@ def create_app(opts: ServerOptions) -> FastAPI:
 
     @app.get("/")
     def index():
-        index_html = STATIC_DIR / "index.html"
+        # The React UI (webui/, built by Vite into static/dist — see CLAUDE.md).
+        # no-cache: the asset filenames are content-hashed, but this document
+        # is not — a heuristically-cached stale index points at deleted
+        # bundles and breaks the page until revalidation.
+        index_html = STATIC_DIR / "dist" / "index.html"
         if index_html.is_file():
-            return FileResponse(index_html)
-        return {"app": "whisper-to-me"}
+            return FileResponse(index_html, headers={"Cache-Control": "no-cache"})
+        return {"app": "whisper-to-me", "detail": "webui not built"}
 
     @app.get("/api/status")
     def get_status():
