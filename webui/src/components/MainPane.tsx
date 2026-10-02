@@ -1,11 +1,15 @@
 /* Main content area: session bar + the active view. Each pane lives in its
    own file (one work package per file — don't fold them back in here). */
 
+import { lazy, Suspense } from "react";
 import { useStore } from "../store";
-import { ChatView } from "./ChatView";
 import { LivePane } from "./LivePane";
 import { NoteContainer } from "./NoteContainer";
 import { SessionBar } from "./SessionBar";
+
+// The AI SDK only loads when the Ask view first opens (keeps it out of the
+// main bundle).
+const ChatView = lazy(() => import("./ChatView").then((m) => ({ default: m.ChatView })));
 
 function EmptyState() {
   const status = useStore((s) => s.status);
@@ -39,7 +43,11 @@ export function MainPane() {
         {view === "empty" && <EmptyState />}
         {view === "transcript" && <LivePane />}
         {view === "note" && <NoteContainer />}
-        {view === "chat" && <ChatView />}
+        {view === "chat" && (
+          <Suspense fallback={null}>
+            <ChatView />
+          </Suspense>
+        )}
       </div>
     </main>
   );

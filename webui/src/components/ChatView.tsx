@@ -30,13 +30,22 @@ function messageSources(msg: ChatMessage): ChatSource[] {
 
 export function ChatView() {
   const toast = useStore((s) => s.toast);
-  const { messages, sendMessage, status } = useChat({
-    chat,
-    onError: () => toast("Couldn't get an answer.", "error"),
-  });
+  const { messages, sendMessage, setMessages, status, clearError } = useChat({ chat });
   const pending = status === "submitted" || status === "streaming";
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+
+  // A failed turn is rolled back (question + any partial answer) so it is
+  // neither left on screen nor sent as history with the next question.
+  useEffect(() => {
+    if (status !== "error") return;
+    toast("Couldn't get an answer.", "error");
+    setMessages((msgs) => {
+      const lastUser = msgs.map((m) => m.role).lastIndexOf("user");
+      return lastUser === -1 ? msgs : msgs.slice(0, lastUser);
+    });
+    clearError();
+  }, [status, toast, setMessages, clearError]);
 
   // Focus input on mount, and again when an answer finishes.
   useEffect(() => {
@@ -168,8 +177,9 @@ function linkifyCitations(root: HTMLElement, sources: ChatSource[]) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Node[] = [];
 
+  // Skip already-linked citations so a re-run never nests <a> in <a>.
   while (walker.nextNode()) {
-    nodes.push(walker.currentNode);
+    if (!walker.currentNode.parentElement?.closest("a.cite")) nodes.push(walker.currentNode);
   }
 
   for (const node of nodes) {

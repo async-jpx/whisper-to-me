@@ -10,6 +10,9 @@ export default defineConfig({
   build: {
     outDir: "../src/whisper_to_me/static/dist",
     emptyOutDir: true,
+    // Served from 127.0.0.1 only, so bundle size isn't a download cost; the
+    // main chunk is mostly CodeMirror (the Ask view is already split out).
+    chunkSizeWarningLimit: 1024,
   },
   server: {
     proxy: {
