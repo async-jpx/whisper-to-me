@@ -338,7 +338,9 @@ Key invariants:
   require equal instance sizes + the same `focusable` ivar offset, else log
   and keep the plain window (still floats, but a click activates us). The
   private `_setPreventsActivation:` is called only if `respondsToSelector:`
-  — without it a click on the panel still activates the app. Verify with
+  — without it a click on the panel still activates the app. The swap drops
+  the KVO subclass, so the overlay is created once and never closed or
+  destroyed (hide/order-out only); tearing it down is unexercised. Verify with
   CGWindowList (layer 25) + frontmost app over a full-screen Terminal.
 - **Notifications carry the app's identity only from a bundled build**: the
   bare `target/debug` binary's notifications are attributed to the terminal
