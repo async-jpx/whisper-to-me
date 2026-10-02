@@ -215,7 +215,10 @@ def _chat_stream(model: str, system: str, user: str, timeout: int = 600):
         for line in resp.iter_lines():
             if not line:
                 continue
-            data = json.loads(line)
+            try:
+                data = json.loads(line)
+            except ValueError as exc:
+                raise OllamaError(f"Ollama sent a malformed stream line: {line[:120]!r}") from exc
             if data.get("error"):
                 raise OllamaError(f"Ollama error: {str(data['error'])[:300]}")
             piece = data.get("message", {}).get("content", "")

@@ -113,3 +113,26 @@ def test_history_role_validation():
 def test_history_none_is_empty():
     assert chat._history_text(None) == ""
     assert chat._history_text([]) == ""
+
+
+def test_chat_stream_malformed_line_is_ollama_error(monkeypatch):
+    import pytest
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self):
+            yield b'{"message": {"content": "ok"}}'
+            yield b"not json"
+
+        def close(self):
+            self.closed = True
+
+    resp = FakeResp()
+    monkeypatch.setattr(summ.requests, "post", lambda *a, **k: resp)
+    gen = summ._chat_stream("m", "sys", "user")
+    assert next(gen) == "ok"
+    with pytest.raises(summ.OllamaError, match="malformed"):
+        next(gen)
+    assert resp.closed
