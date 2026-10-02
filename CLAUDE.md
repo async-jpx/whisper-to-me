@@ -334,3 +334,5 @@ Key invariants:
 - `cli.py` stays thin; new behavior goes in `session.py`/layer modules.
 - New dependencies need a strong reason (local-only, small, maintained).
 - GitHub via `gh` CLI (HTTPS remote; no SSH key on this machine).
+
+@~/.claude/pstack-models.md
