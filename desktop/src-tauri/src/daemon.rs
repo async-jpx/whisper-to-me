@@ -27,14 +27,95 @@ pub fn base_url() -> String {
     format!("http://127.0.0.1:{}", port())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Phase {
+    #[default]
+    Idle,
+    Prompting,
+    Starting,
+    Recording,
+    Stopping,
+    Summarizing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Origin {
+    Manual,
+    Detected,
+    Simulate,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Prompt {
+    pub id: String,
+    pub title: String,
+    pub expires_in_s: f64,
+}
+
+/// The daemon's status frame, parsed once at the WS boundary. `received`
+/// anchors both relative clocks (`elapsed_base`, `prompt.expires_in_s`).
 #[derive(Default, Clone)]
 pub struct Status {
     pub online: bool,
-    pub state: String, // idle | starting | recording | watching | stopping | summarizing
-    pub mode: Option<String>, // record | watch | simulate
+    pub phase: Phase,
+    pub origin: Option<Origin>,
     pub title: Option<String>,
+    pub prompt: Option<Prompt>,
     pub elapsed_base: f64,
     pub received: Option<Instant>,
+}
+
+impl Status {
+    pub fn can_start(&self) -> bool {
+        self.online && matches!(self.phase, Phase::Idle | Phase::Prompting)
+    }
+
+    /// The daemon refuses to stop a simulate (it ends with its input file).
+    pub fn can_stop(&self) -> bool {
+        self.online
+            && matches!(self.phase, Phase::Starting | Phase::Recording)
+            && matches!(self.origin, Some(Origin::Manual | Origin::Detected))
+    }
+
+    pub fn since_received(&self) -> f64 {
+        self.received.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0)
+    }
+}
+
+/// Unknown state/origin strings degrade to Idle/None rather than failing,
+/// so a newer daemon never wedges an older shell.
+fn parse_status(evt: &Value) -> Status {
+    let str_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+    let phase = match evt.get("state").and_then(Value::as_str) {
+        Some("prompting") => Phase::Prompting,
+        Some("starting") => Phase::Starting,
+        Some("recording") => Phase::Recording,
+        Some("stopping") => Phase::Stopping,
+        Some("summarizing") => Phase::Summarizing,
+        _ => Phase::Idle,
+    };
+    let origin = match evt.get("origin").and_then(Value::as_str) {
+        Some("manual") => Some(Origin::Manual),
+        Some("detected") => Some(Origin::Detected),
+        Some("simulate") => Some(Origin::Simulate),
+        _ => None,
+    };
+    let prompt = evt.get("prompt").filter(|p| p.is_object()).and_then(|p| {
+        Some(Prompt {
+            id: str_of(p, "id")?,
+            title: str_of(p, "title").unwrap_or_default(),
+            expires_in_s: p.get("expires_in_s").and_then(Value::as_f64).unwrap_or(0.0),
+        })
+    });
+    Status {
+        online: true,
+        phase,
+        origin,
+        title: str_of(evt, "title"),
+        prompt,
+        elapsed_base: evt.get("elapsed_s").and_then(Value::as_f64).unwrap_or(0.0),
+        received: Some(Instant::now()),
+    }
 }
 
 #[derive(Default)]
@@ -66,6 +147,13 @@ pub fn api_post_body(path: &str, body: String) {
             .set("Content-Type", "application/json")
             .send_string(&body);
     });
+}
+
+/// A 409 (the prompt already expired or was answered elsewhere) needs no
+/// handling: the status frame that follows is authoritative.
+pub fn answer_prompt(id: &str, record: bool) {
+    let answer = if record { "record" } else { "dismiss" };
+    api_post_body(&format!("/api/prompts/{id}"), format!(r#"{{"answer": "{answer}"}}"#));
 }
 
 pub fn api_get_json(path: &str) -> Option<Value> {
@@ -216,11 +304,10 @@ fn mark_online(app: &AppHandle, online: bool) {
     {
         let state = app.state::<AppState>();
         let mut status = state.status.lock().unwrap();
-        status.online = online;
-        if !online {
-            status.state.clear();
-            status.title = None;
-            status.mode = None;
+        if online {
+            status.online = true;
+        } else {
+            *status = Status::default();
         }
     }
     if !online {
@@ -241,42 +328,20 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
 fn handle_event(app: &AppHandle, evt: &Value) {
     match evt.get("type").and_then(Value::as_str) {
         Some("status") => {
-            let new_state = evt.get("state").and_then(Value::as_str).unwrap_or("idle");
-            let title = evt.get("title").and_then(Value::as_str).map(str::to_string);
-            let prev_state;
-            {
+            let next = parse_status(evt);
+            let shown = next.prompt.as_ref().map(|p| p.id.clone());
+            let prev = {
                 let state = app.state::<AppState>();
                 let mut status = state.status.lock().unwrap();
-                prev_state = std::mem::replace(&mut status.state, new_state.to_string());
-                status.online = true;
-                status.mode = evt.get("mode").and_then(Value::as_str).map(str::to_string);
-                status.title = title.clone();
-                status.elapsed_base = evt.get("elapsed_s").and_then(Value::as_f64).unwrap_or(0.0);
-                status.received = Some(Instant::now());
-            }
-            if (prev_state == "watching" || prev_state == "prompting")
-                && new_state == "recording"
-            {
-                notify(
-                    app,
-                    "Meeting detected — recording",
-                    title.as_deref().unwrap_or(""),
-                );
-            }
-            // The Notion-style overlay: visible exactly while the daemon is
-            // asking record/ignore. Its buttons talk to the daemon directly;
-            // the shell only mirrors visibility off the status feed.
-            if new_state == "prompting" {
-                if prev_state != "prompting" {
-                    notify(
-                        app,
-                        "Meeting detected",
-                        title.as_deref().unwrap_or("Record it?"),
-                    );
-                }
-                crate::prompt::show(app);
-            } else {
-                crate::prompt::hide(app);
+                std::mem::replace(&mut *status, next).prompt.map(|p| p.id)
+            };
+            // The overlay is the detection notice (no banner: it would land
+            // on top of it). Its page owns the countdown and the buttons;
+            // the shell shows it once per prompt id and hides it when gone.
+            match shown {
+                None => crate::prompt::hide(app),
+                Some(id) if prev.as_deref() != Some(id.as_str()) => crate::prompt::show(app),
+                Some(_) => {}
             }
             crate::tray::refresh(app);
         }

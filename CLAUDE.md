@@ -173,9 +173,13 @@ static/        dist/ — the committed Vite build, served at / (Cache-Control:
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →
-               http://127.0.0.1:8737, tray mirrors /api/events, notifications;
-               prompt.rs shows/hides the always-on-top meeting-prompt overlay
-               (loads /static/prompt.html) on the "prompting" state
+               http://127.0.0.1:8737, tray mirrors /api/events (status frame
+               parsed once into daemon::Status: Phase/Origin/Prompt; prompt
+               answers POST /api/prompts/{id}), notifications (saved/error
+               only — the overlay is the detection notice); prompt.rs shows
+               the overlay (loads /static/prompt.html) once per new prompt
+               id and hides it when `prompt` is null or the daemon goes
+               offline — a non-activating NSPanel over full-screen Spaces
 ```
 
 Key invariants:
@@ -319,6 +323,20 @@ Key invariants:
 - **Tray `set_title(None)` does not clear the title on macOS** (desktop
   tray.rs): after "summarizing" set the title to `Some("")`, or the "…" sticks
   in the menu bar forever. Verified the hard way; keep the always-`Some` form.
+- **The meeting overlay must never activate us** (desktop prompt.rs): tao's
+  `show()` is makeKeyAndOrderFront — it pulls the user out of a full-screen
+  call Space. The overlay is built `focusable(false)` + `accept_first_mouse`,
+  then (main thread only) re-classed in place to a runtime NSPanel subclass
+  `WtmOverlayPanel` via `object_setClass`, given `NonactivatingPanel`,
+  `hidesOnDeactivate = NO`, CanJoinAllSpaces|FullScreenAuxiliary|Stationary|
+  IgnoresCycle, `NSStatusWindowLevel`, and shown with
+  `orderFrontRegardless`. The swap is guarded: walk the class chain to
+  `TaoWindow` (the live class is KVO's `NSKVONotifying_TaoWindow`) and
+  require equal instance sizes + the same `focusable` ivar offset, else log
+  and keep the plain window (still floats, but a click activates us). The
+  private `_setPreventsActivation:` is called only if `respondsToSelector:`
+  — without it a click on the panel still activates the app. Verify with
+  CGWindowList (layer 25) + frontmost app over a full-screen Terminal.
 - **Notifications carry the app's identity only from a bundled build**: the
   bare `target/debug` binary's notifications are attributed to the terminal
   app (name + icon). Test identity with `npx tauri build --bundles app` and

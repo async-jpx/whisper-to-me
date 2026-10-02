@@ -8,17 +8,15 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{App, AppHandle, Manager, Wry};
 
-use crate::daemon;
+use crate::daemon::{self, Phase};
 
 pub struct TrayHandles {
     tray: TrayIcon,
     status_line: MenuItem<Wry>,
     start: MenuItem<Wry>,
     stop: MenuItem<Wry>,
-    watch: MenuItem<Wry>,
-    unwatch: MenuItem<Wry>,
     record_meeting: MenuItem<Wry>,
-    ignore_meeting: MenuItem<Wry>,
+    dismiss_meeting: MenuItem<Wry>,
     open_last: MenuItem<Wry>,
 }
 
@@ -26,12 +24,10 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     let status_line = MenuItem::with_id(app, "status", "Starting daemon…", false, None::<&str>)?;
     let start = MenuItem::with_id(app, "start", "Start recording", false, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Stop recording", false, None::<&str>)?;
-    let watch = MenuItem::with_id(app, "watch", "Start watching for meetings", false, None::<&str>)?;
-    let unwatch = MenuItem::with_id(app, "unwatch", "Stop watching", false, None::<&str>)?;
     let record_meeting =
         MenuItem::with_id(app, "record-meeting", "Record this meeting", false, None::<&str>)?;
-    let ignore_meeting =
-        MenuItem::with_id(app, "ignore-meeting", "Ignore this meeting", false, None::<&str>)?;
+    let dismiss_meeting =
+        MenuItem::with_id(app, "dismiss-meeting", "Dismiss this meeting", false, None::<&str>)?;
     let open_last = MenuItem::with_id(app, "open-last", "Open last note", false, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "Open whisper-to-me", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -43,10 +39,8 @@ pub fn setup(app: &App) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &start,
             &stop,
-            &watch,
-            &unwatch,
             &record_meeting,
-            &ignore_meeting,
+            &dismiss_meeting,
             &PredefinedMenuItem::separator(app)?,
             &open_last,
             &show,
@@ -69,10 +63,8 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         status_line,
         start,
         stop,
-        watch,
-        unwatch,
         record_meeting,
-        ignore_meeting,
+        dismiss_meeting,
         open_last,
     });
     Ok(())
@@ -82,13 +74,11 @@ fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "start" => daemon::api_post("/api/record/start"),
         "stop" => daemon::api_post("/api/record/stop"),
-        "watch" => daemon::api_post("/api/watch/start"),
-        "unwatch" => daemon::api_post("/api/watch/stop"),
-        "record-meeting" => {
-            daemon::api_post_body("/api/watch/respond", r#"{"accept": true}"#.to_string())
-        }
-        "ignore-meeting" => {
-            daemon::api_post_body("/api/watch/respond", r#"{"accept": false}"#.to_string())
+        "record-meeting" | "dismiss-meeting" => {
+            let prompt = app.state::<daemon::AppState>().status.lock().unwrap().prompt.clone();
+            if let Some(p) = prompt {
+                daemon::answer_prompt(&p.id, id == "record-meeting");
+            }
         }
         "open-last" => open_last_note(app),
         "show" => show_main(app),
@@ -137,44 +127,12 @@ pub fn refresh(app: &AppHandle) {
         return;
     };
 
-    let mode = status.mode.as_deref().unwrap_or("");
-    let line = if !status.online {
-        "Daemon offline".to_string()
-    } else {
-        match status.state.as_str() {
-            "starting" => "Starting the recorder…".to_string(),
-            "recording" => match &status.title {
-                Some(t) => format!("Recording — {t}"),
-                None => "Recording".to_string(),
-            },
-            "watching" => "Watching for meetings".to_string(),
-            "prompting" => match &status.title {
-                Some(t) => format!("Meeting detected — {t}"),
-                None => "Meeting detected — record?".to_string(),
-            },
-            "stopping" => "Finishing — transcribing the last audio…".to_string(),
-            "summarizing" => "Summarizing…".to_string(),
-            _ => "Idle — ready".to_string(),
-        }
-    };
-    let _ = handles.status_line.set_text(line);
-    // "Start recording" also works while watching: the daemon preempts the
-    // idle watch and re-arms it after the manual recording is saved.
-    let _ = handles
-        .start
-        .set_enabled(status.online && matches!(status.state.as_str(), "idle" | "watching"));
-    let _ = handles.stop.set_enabled(
-        status.online
-            && mode == "record"
-            && matches!(status.state.as_str(), "starting" | "recording"),
-    );
-    let _ = handles.watch.set_enabled(status.online && status.state == "idle");
-    let _ = handles
-        .unwatch
-        .set_enabled(status.online && mode == "watch" && status.state != "idle");
-    let prompting = status.online && status.state == "prompting";
+    let _ = handles.status_line.set_text(status_line(&status));
+    let _ = handles.start.set_enabled(status.can_start());
+    let _ = handles.stop.set_enabled(status.can_stop());
+    let prompting = status.online && status.prompt.is_some();
     let _ = handles.record_meeting.set_enabled(prompting);
-    let _ = handles.ignore_meeting.set_enabled(prompting);
+    let _ = handles.dismiss_meeting.set_enabled(prompting);
     let _ = handles.open_last.set_enabled(status.online);
 
     // Always Some(...): set_title(None) does not clear an existing title on
@@ -182,33 +140,57 @@ pub fn refresh(app: &AppHandle) {
     let _ = handles.tray.set_title(Some(tray_title(&status)));
 }
 
+fn status_line(status: &daemon::Status) -> String {
+    if !status.online {
+        return "Daemon offline".to_string();
+    }
+    match status.phase {
+        Phase::Idle => "Ready".to_string(),
+        Phase::Prompting => match &status.prompt {
+            Some(p) => {
+                let left = (p.expires_in_s - status.since_received()).max(0.0).ceil();
+                format!("Meeting detected — {} ({left}s)", p.title)
+            }
+            None => "Meeting detected".to_string(),
+        },
+        Phase::Starting => "Starting the recorder…".to_string(),
+        Phase::Recording => match &status.title {
+            Some(t) => format!("Recording — {t}"),
+            None => "Recording".to_string(),
+        },
+        Phase::Stopping => "Finishing — transcribing the last audio…".to_string(),
+        Phase::Summarizing => "Summarizing…".to_string(),
+    }
+}
+
 fn tray_title(status: &daemon::Status) -> String {
-    match status.state.as_str() {
-        "recording" => {
-            let elapsed = status.elapsed_base
-                + status.received.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
-            let total = elapsed.max(0.0) as u64;
+    match status.phase {
+        Phase::Recording => {
+            let total = (status.elapsed_base + status.since_received()).max(0.0) as u64;
             format!("{}:{:02}", total / 60, total % 60)
         }
-        "stopping" | "summarizing" => "…".to_string(),
+        Phase::Stopping | Phase::Summarizing => "…".to_string(),
         _ => String::new(),
     }
 }
 
-/// Keeps the menu-bar elapsed time ticking between status events.
+/// Keeps the menu-bar elapsed time and the prompt countdown ticking
+/// between status events.
 pub fn title_ticker(app: AppHandle) {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let recording = {
-            let state = app.state::<daemon::AppState>();
-            let status = state.status.lock().unwrap();
-            status.state == "recording"
+        let status = app.state::<daemon::AppState>().status.lock().unwrap().clone();
+        let Some(handles) = app.try_state::<TrayHandles>() else {
+            continue;
         };
-        if recording {
-            if let Some(handles) = app.try_state::<TrayHandles>() {
-                let status = app.state::<daemon::AppState>().status.lock().unwrap().clone();
+        match status.phase {
+            Phase::Recording => {
                 let _ = handles.tray.set_title(Some(tray_title(&status)));
             }
+            Phase::Prompting => {
+                let _ = handles.status_line.set_text(status_line(&status));
+            }
+            _ => {}
         }
     }
 }

@@ -239,8 +239,10 @@ edit / toggle task), `search`, `chat`, `templates`, `export/config`,
 ## Desktop app (menu-bar, `desktop/`)
 
 A Tauri shell that puts the daemon in the macOS menu bar: a tray icon with
-record/watch controls and elapsed time, a webview window on the local UI, and
-native notifications. It spawns `wtm serve` as a sidecar — or, if a daemon is
+record controls, Record/Dismiss for a detected meeting, and elapsed time; a
+webview window on the local UI; a small meeting prompt that floats over any
+app (even a full-screen call) without taking focus; and native notifications
+for saved notes and errors. It spawns `wtm serve` as a sidecar — or, if a daemon is
 already running on the port, attaches to it and never kills it. On quit the
 spawned daemon gets SIGTERM (which saves and summarizes, exactly like Ctrl-C)
 with a grace period; if it's still writing a note it is left running to

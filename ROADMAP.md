@@ -82,11 +82,14 @@ the CLI keeps working unchanged.
 1. ✅ Tauri scaffold + sidecar lifecycle (spawn on launch, health-check,
    SIGTERM on quit; port-in-use = daemon already running → attach, never kill).
 2. ✅ **Menu-bar (tray) presence** — status line + elapsed-time title,
-   Start/Stop record, Start/Stop watch, "Open last note" (deep-links via
-   `#note=` hash), Open window, Quit. (No pause — the daemon has no pause
-   endpoint yet.)
-3. ✅ Native notifications: "Meeting detected — recording", "Note saved:
-   *Title*", daemon errors. (Banner visibility for the unbundled dev binary
+   Start/Stop record (Stop covers manual and detected recordings), Record /
+   Dismiss this meeting while a prompt is up (status line counts down),
+   "Open last note" (deep-links via `#note=` hash), Open window, Quit. A
+   detected meeting shows a non-activating overlay that floats over
+   full-screen apps without stealing focus. (No pause — the daemon has no
+   pause endpoint yet.)
+3. ✅ Native notifications: "Note saved: *Title*", daemon errors (the
+   overlay replaced the "Meeting detected" banners). (Banner visibility for the unbundled dev binary
    depends on macOS notification permission; re-check once bundled/signed.)
 4. Login item (launch at startup; meeting detection is always on, so there is
    no mode to start in), dock-less mode.
