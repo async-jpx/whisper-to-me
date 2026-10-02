@@ -2,7 +2,7 @@ import { useRef, useEffect, useState } from "react";
 import { useStore } from "../store";
 import { api } from "../api/client";
 import { EditorToolbar } from "./EditorToolbar";
-import { markdownKeydown } from "../lib/editing";
+import { MarkdownEditor, type ReactCodeMirrorRef } from "./MarkdownEditor";
 import { Icon } from "./Icons";
 
 export function LivePane() {
@@ -15,7 +15,7 @@ export function LivePane() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const cmRef = useRef<ReactCodeMirrorRef>(null);
   const scratchpadTimerRef = useRef<number | null>(null);
   const scratchpadErrorShownRef = useRef(false);
 
@@ -75,8 +75,8 @@ export function LivePane() {
     };
   }, []);
 
-  const handleScratchpadChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setScratchpad(e.target.value);
+  const handleScratchpadChange = (text: string) => {
+    setScratchpad(text);
     scheduleSave();
   };
 
@@ -142,15 +142,13 @@ export function LivePane() {
       </div>
       <div className="scratchpad">
         <div className="scratchpad-label">Your notes shape the summary</div>
-        <EditorToolbar target={taRef} />
-        <textarea
-          id="scratchpad"
-          ref={taRef}
-          spellCheck={false}
-          placeholder="Type your own notes here — each point is expanded in the final summary…"
+        <EditorToolbar target={cmRef} />
+        <MarkdownEditor
+          ref={cmRef}
+          className="scratchpad-editor"
           value={scratchpad}
           onChange={handleScratchpadChange}
-          onKeyDown={markdownKeydown}
+          placeholder="Type your own notes here — each point is expanded in the final summary…"
         />
       </div>
     </div>

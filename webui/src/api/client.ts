@@ -2,8 +2,6 @@
    daemon binds 127.0.0.1 and nothing here may ever address another host. */
 
 import type {
-  ChatResponse,
-  ChatTurn,
   ExportConfig,
   NoteMeta,
   SearchHit,
@@ -85,9 +83,8 @@ export const api = {
   search: (q: string) =>
     getJson<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),
 
-  // -- chat / exports / settings ------------------------------------------
-  chat: (question: string, history: ChatTurn[]) =>
-    sendJson<ChatResponse>("POST", "/api/chat", { question, history }),
+  // -- exports / settings ---------------------------------------------------
+  // (chat streams over /api/chat/stream via the AI SDK transport in ChatView)
   exportConfig: () => getJson<ExportConfig>("/api/export/config"),
   copyToVault: (name: string) => sendJson<void>("POST", `${note(name)}/vault`),
   followup: (name: string) =>

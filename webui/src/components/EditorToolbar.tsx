@@ -1,17 +1,18 @@
 /* The formatting toolbar shared by the note editor and the live scratchpad.
    Buttons use onMouseDown preventDefault — a mousedown would blur the
-   textarea and lose its selection. */
+   editor and lose its selection. */
 
 import type { RefObject } from "react";
-import { toggleListMarker, toggleWrap, type ListKind } from "../lib/editing";
+import type { ReactCodeMirrorRef } from "@uiw/react-codemirror";
+import { toggleListMarker, toggleWrap, type ListKind } from "../lib/cm";
 
-export function EditorToolbar({ target }: { target: RefObject<HTMLTextAreaElement | null> }) {
+export function EditorToolbar({ target }: { target: RefObject<ReactCodeMirrorRef | null> }) {
   const run = (cmd: "bold" | "italic" | ListKind) => {
-    const ta = target.current;
-    if (!ta) return;
-    if (cmd === "bold") toggleWrap(ta, "**");
-    else if (cmd === "italic") toggleWrap(ta, "*");
-    else toggleListMarker(ta, cmd);
+    const view = target.current?.view;
+    if (!view) return;
+    if (cmd === "bold") toggleWrap(view, "**");
+    else if (cmd === "italic") toggleWrap(view, "*");
+    else toggleListMarker(view, cmd);
   };
   const prevent = (evt: React.MouseEvent) => evt.preventDefault();
 

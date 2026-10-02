@@ -42,16 +42,6 @@ export interface ChatSource {
   title: string;
 }
 
-export interface ChatResponse {
-  answer: string;
-  sources: ChatSource[];
-}
-
-export interface ChatTurn {
-  role: "user" | "assistant";
-  content: string;
-}
-
 export interface ExportConfig {
   obsidian_vault: string | null;
   notion_configured: boolean;

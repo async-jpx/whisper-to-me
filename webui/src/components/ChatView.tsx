@@ -1,35 +1,47 @@
+/* 💬 Ask view on the AI SDK's useChat: answers stream token-by-token from
+   /api/chat/stream (SSE from the local daemon → local Ollama; nothing leaves
+   the machine). The Chat instance lives at module level so the conversation
+   survives view switches, resetting only on page reload. */
+
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api/client";
+import { Chat, useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import type { ChatSource } from "../api/types";
 import { md } from "../lib/markdown";
 import { useStore } from "../store";
 
-interface ChatMessage {
-  role: "user" | "assistant" | "thinking";
-  text?: string; // user message
-  answer?: string; // assistant
-  sources?: ChatSource[];
+type ChatMessage = UIMessage<unknown, { sources: ChatSource[] }>;
+
+const chat = new Chat<ChatMessage>({
+  transport: new DefaultChatTransport({ api: "/api/chat/stream" }),
+});
+
+function messageText(msg: ChatMessage): string {
+  return msg.parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("");
 }
 
-// Module-level messages array survives view switches, resets only on page reload.
-let messages: ChatMessage[] = [];
-let messageVersion = 0;
+function messageSources(msg: ChatMessage): ChatSource[] {
+  const part = msg.parts.find((p) => p.type === "data-sources");
+  return part?.data ?? [];
+}
 
 export function ChatView() {
-  const pushChatTurn = useStore((s) => s.pushChatTurn);
-  const popChatTurn = useStore((s) => s.popChatTurn);
   const toast = useStore((s) => s.toast);
-  // All message mutations go through addMessage/removeLastMessage below,
-  // which bump this state — no polling needed to track the module array.
-  const [, setVersion] = useState(messageVersion);
-  const [pending, setPending] = useState(false);
+  const { messages, sendMessage, status } = useChat({
+    chat,
+    onError: () => toast("Couldn't get an answer.", "error"),
+  });
+  const pending = status === "submitted" || status === "streaming";
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
-  // Focus input on mount.
+  // Focus input on mount, and again when an answer finishes.
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (!pending) inputRef.current?.focus();
+  }, [pending]);
 
   // Scroll to bottom after messages change (and on re-entering the view).
   useEffect(() => {
@@ -38,84 +50,43 @@ export function ChatView() {
     }
   });
 
-  const addMessage = (msg: ChatMessage) => {
-    messages.push(msg);
-    messageVersion++;
-    setVersion(messageVersion);
-  };
-
-  const removeLastMessage = () => {
-    messages.pop();
-    messageVersion++;
-    setVersion(messageVersion);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const q = inputRef.current?.value.trim() ?? "";
     if (!q || pending) return;
-
-    const input = inputRef.current;
-    if (!input) return;
-
-    input.value = "";
-    setPending(true);
-
-    // History = prior turns only, captured BEFORE pushing the new question.
-    const history = useStore.getState().chatHistory.slice(-6);
-
-    addMessage({ role: "user", text: q });
-    pushChatTurn({ role: "user", content: q });
-    addMessage({ role: "thinking" });
-
-    try {
-      const resp = await api.chat(q, history);
-
-      removeLastMessage(); // thinking
-      addMessage({ role: "assistant", answer: resp.answer, sources: resp.sources });
-      pushChatTurn({ role: "assistant", content: resp.answer });
-    } catch {
-      removeLastMessage(); // thinking
-      popChatTurn(); // roll back the unanswered turn
-      toast("Couldn't get an answer.", "error");
-    } finally {
-      setPending(false);
-      inputRef.current?.focus();
-    }
+    if (inputRef.current) inputRef.current.value = "";
+    void sendMessage({ text: q });
   };
+
+  const last = messages[messages.length - 1];
+  const thinking = status === "submitted" || (pending && last?.role === "user");
 
   return (
     <div className="chat-view">
       <div className="chat-messages" ref={messagesRef}>
-        {messages.length === 0 ? (
+        {messages.length === 0 && !thinking ? (
           <div className="chat-hint">
             Ask anything about your past meetings. Answers cite the notes they come from —
             nothing leaves your machine.
           </div>
         ) : (
-          messages.map((msg, i) => {
-            if (msg.role === "user") {
-              return (
-                <div key={i} className="chat-msg chat-user">
-                  {msg.text}
-                </div>
-              );
-            } else if (msg.role === "thinking") {
-              return (
-                <div key={i} className="chat-msg chat-assistant chat-thinking">
-                  Thinking…
-                </div>
-              );
-            } else {
-              return (
-                <AssistantMessage
-                  key={i}
-                  answer={msg.answer ?? ""}
-                  sources={msg.sources ?? []}
-                />
-              );
-            }
-          })
+          messages.map((msg, i) =>
+            msg.role === "user" ? (
+              <div key={msg.id} className="chat-msg chat-user">
+                {messageText(msg)}
+              </div>
+            ) : (
+              <AssistantMessage
+                key={msg.id}
+                answer={messageText(msg)}
+                sources={messageSources(msg)}
+                complete={!(pending && i === messages.length - 1)}
+              />
+            )
+          )
+        )}
+        {thinking && (
+          <div className="chat-msg chat-assistant chat-thinking">Thinking…</div>
         )}
       </div>
       <form className="chat-form" onSubmit={handleSubmit}>
@@ -138,28 +109,27 @@ export function ChatView() {
 interface AssistantMessageProps {
   answer: string;
   sources: ChatSource[];
+  complete: boolean;
 }
 
-function AssistantMessage({ answer, sources }: AssistantMessageProps) {
+function AssistantMessage({ answer, sources, complete }: AssistantMessageProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const processedRef = useRef(false);
+  const [html, setHtml] = useState("");
+
+  // Markdown re-renders on every streamed delta; citations become links only
+  // once the answer is complete (linkify walks the final DOM).
+  useEffect(() => {
+    setHtml(md.render(answer));
+  }, [answer]);
 
   useEffect(() => {
-    if (processedRef.current || !bodyRef.current) return;
-    processedRef.current = true;
-
-    // Linkify citations: [n] → link to cited note.
-    linkifyCitations(bodyRef.current, sources);
-  }, [sources]);
+    if (complete && bodyRef.current) linkifyCitations(bodyRef.current, sources);
+  }, [complete, sources, html]);
 
   return (
     <div className="chat-msg chat-assistant">
-      <div
-        className="chat-body"
-        ref={bodyRef}
-        dangerouslySetInnerHTML={{ __html: md.render(answer) }}
-      />
-      {sources.length > 0 && <SourceList sources={sources} />}
+      <div className="chat-body" ref={bodyRef} dangerouslySetInnerHTML={{ __html: html }} />
+      {complete && sources.length > 0 && <SourceList sources={sources} />}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { useStore } from "../store";
 import { api } from "../api/client";
 import type { ApiError } from "../api/client";
 import { md, stripFrontmatter } from "../lib/markdown";
-import { markdownKeydown } from "../lib/editing";
+import { MarkdownEditor, type ReactCodeMirrorRef } from "./MarkdownEditor";
 import { EditorToolbar } from "./EditorToolbar";
 import { ExportMenu } from "./ExportMenu";
 
@@ -85,7 +85,7 @@ function anchorStamps(noteView: HTMLElement): void {
 
 export function NoteContainer() {
   const ref = useRef<HTMLElement>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const cmRef = useRef<ReactCodeMirrorRef>(null);
   const currentNote = useStore((s) => s.currentNote);
   const noteRenderSeq = useStore((s) => s.noteRenderSeq);
   const editing = useStore((s) => s.editing);
@@ -108,12 +108,11 @@ export function NoteContainer() {
     }, 150);
   }, []);
 
-  // Focus textarea and compute initial preview when entering edit mode
+  // Compute the initial preview when entering edit mode (the editor focuses
+  // itself via autoFocus).
   useEffect(() => {
-    if (!editing || !taRef.current) return;
-    const ta = taRef.current;
-    ta.focus();
-    const text = ta.value;
+    if (!editing) return;
+    const text = useStore.getState().editorDraft ?? "";
     setPreviewHtml(md.render(stripFrontmatter(text)));
   }, [editing]);
 
@@ -179,9 +178,9 @@ export function NoteContainer() {
   };
 
   const handleSave = async () => {
-    const ta = taRef.current;
-    if (!ta || !currentNote) return;
-    const content = ta.value;
+    if (!currentNote) return;
+    const content =
+      cmRef.current?.view?.state.doc.toString() ?? useStore.getState().editorDraft ?? "";
     try {
       await api.putNote(currentNote, content);
       noteSaved(content);
@@ -204,10 +203,7 @@ export function NoteContainer() {
     setEditing(false);
   };
 
-  const handleEditorInput = () => {
-    const ta = taRef.current;
-    if (!ta) return;
-    const text = ta.value;
+  const handleEditorChange = (text: string) => {
     setEditorDraft(text);
     schedulePreview(text);
   };
@@ -226,15 +222,14 @@ export function NoteContainer() {
           </span>
         </div>
         <div className="editor-split">
-          <EditorToolbar target={taRef} />
+          <EditorToolbar target={cmRef} />
           <div className="editor-panes">
-            <textarea
-              ref={taRef}
-              className="note-editor"
-              spellCheck={false}
-              defaultValue={editorDraft ?? ""}
-              onKeyDown={markdownKeydown}
-              onInput={handleEditorInput}
+            <MarkdownEditor
+              ref={cmRef}
+              className="note-editor-cm"
+              value={editorDraft ?? ""}
+              onChange={handleEditorChange}
+              autoFocus
             />
             <article
               className="note-view editor-preview"

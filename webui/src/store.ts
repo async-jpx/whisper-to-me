@@ -6,7 +6,7 @@
 
 import { create } from "zustand";
 import { api } from "./api/client";
-import type { ChatTurn, NoteMeta, SearchHit, Status, Template } from "./api/types";
+import type { NoteMeta, SearchHit, Status, Template } from "./api/types";
 
 export type View = "empty" | "transcript" | "note" | "chat";
 
@@ -74,7 +74,6 @@ export interface AppState {
   archived: NoteMeta[];
   searchResults: SearchHit[] | null; // null = no active search
   templates: Template[];
-  chatHistory: ChatTurn[];
   // -- shared UI -------------------------------------------------------------
   toasts: Toast[];
   confirm: ConfirmRequest | null;
@@ -113,8 +112,6 @@ export interface AppState {
   loadTemplates(): Promise<void>;
 
   openChat(): void;
-  pushChatTurn(turn: ChatTurn): void;
-  popChatTurn(): void;
 }
 
 export const useStore = create<AppState>()((set, get) => ({
@@ -135,7 +132,6 @@ export const useStore = create<AppState>()((set, get) => ({
   archived: [],
   searchResults: null,
   templates: [],
-  chatHistory: [],
   toasts: [],
   confirm: null,
 
@@ -304,11 +300,5 @@ export const useStore = create<AppState>()((set, get) => ({
 
   openChat() {
     set({ currentNote: null, view: "chat" });
-  },
-  pushChatTurn(turn) {
-    set((s) => ({ chatHistory: [...s.chatHistory, turn] }));
-  },
-  popChatTurn() {
-    set((s) => ({ chatHistory: s.chatHistory.slice(0, -1) }));
   },
 }));
