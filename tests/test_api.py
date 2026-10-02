@@ -66,6 +66,13 @@ def test_get_unknown_note_404(client):
     assert client.get("/api/notes/nope.md").status_code == 404
 
 
+def test_prompt_page_is_never_heuristically_cached(client):
+    resp = client.get("/static/prompt.html")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+    assert "/api/prompts/" in resp.text
+
+
 def test_safe_note_path_rejects_traversal_and_non_md(tmp_path):
     assert _safe_note_path(tmp_path, "../evil.md") is None
     assert _safe_note_path(tmp_path, "sub/../../evil.md") is None

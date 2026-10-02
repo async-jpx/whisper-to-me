@@ -583,6 +583,13 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
     manager = SessionManager(opts, probe)
     app.state.manager = manager  # tests reach the session state through here
 
+    @app.get("/static/prompt.html")
+    def prompt_page():
+        # no-cache: the overlay's WebKit otherwise keeps a heuristically-cached
+        # copy across upgrades, and a stale page answers endpoints that no
+        # longer exist. Registered before the /static mount so it wins.
+        return FileResponse(STATIC_DIR / "prompt.html", headers={"Cache-Control": "no-cache"})
+
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
