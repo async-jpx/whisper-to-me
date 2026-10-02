@@ -179,7 +179,10 @@ desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                only — the overlay is the detection notice); prompt.rs shows
                the overlay (loads /static/prompt.html) once per new prompt
                id and hides it when `prompt` is null or the daemon goes
-               offline — a non-activating NSPanel over full-screen Spaces
+               offline — a non-activating NSPanel over full-screen Spaces;
+               login_item.rs = tray "Launch at login" (bundled .app only):
+               ~/Library/LaunchAgents/<identifier>.plist running
+               `open -a <bundle>`, `Disabled` key = opted out
 ```
 
 Key invariants:
@@ -345,6 +348,25 @@ Key invariants:
   SIGTERM (= save + summarize, like Ctrl-C) and a 5 s grace; if still busy it
   is *left running* to finish the note. Also: a daemon that was already
   running on the port is not ours — attach, never kill.
+- **launchd kills the daemon we leave running when a launchd-started app
+  exits** (desktop daemon.rs): a LaunchAgent that execs the binary directly
+  (even with AbandonProcessGroup or `process_group(0)`), *and* any
+  LaunchServices launch — `open -a`, Finder, Dock, the login item; the app
+  runs as job `application.<bundle-id>.*` — lose the daemon the moment the
+  app exits. A SIGSTOPped daemon dies too, so it is a SIGKILL: a note still
+  summarizing past the 5 s grace is lost. Only a shell-launched app's daemon
+  survives. Not fixed yet; the fix is to run the daemon outside the app's
+  job. Re-test with a SIGSTOPped daemon + tray Quit, comparing a shell
+  launch against `open -a`.
+- **Launch at login is bundle-only and plist-only** (desktop login_item.rs):
+  offered only when `current_exe` sits in `<X>.app/Contents/MacOS/` (the dev
+  binary shows it disabled). The plist runs `/usr/bin/open -a <bundle>` (a
+  real app launch, the same as a double-click), never the binary itself.
+  Every launch rewrites it so a moved .app never leaves a stale path; the
+  opt-out is the `Disabled` key (launchd honours it), and the plist is the
+  only state. It is never bootstrapped at runtime — it takes effect at the
+  next login. If the user turns it off in System Settings → Login Items, the
+  checkbox does not know.
 - **FDAF adaptation must use the true error** (echo_cancel.py): adapt on
   `block − y_hat`, never on the protected output — adapting on the substituted
   signal keeps adding a full step to already-wrong weights and the filter

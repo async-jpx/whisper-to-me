@@ -91,8 +91,12 @@ the CLI keeps working unchanged.
 3. ✅ Native notifications: "Note saved: *Title*", daemon errors (the
    overlay replaced the "Meeting detected" banners). (Banner visibility for the unbundled dev binary
    depends on macOS notification permission; re-check once bundled/signed.)
-4. Login item (launch at startup; meeting detection is always on, so there is
-   no mode to start in), dock-less mode.
+4. ✅ Login item: tray "Launch at login" (bundled `.app` only, on by
+   default) writes a LaunchAgent that runs `open -a <bundle>`; meeting
+   detection is always on, so there is no mode to start in. Open: launchd
+   kills the daemon of any LaunchServices-launched app on quit (see
+   CLAUDE.md), so the daemon must move out of the app's launchd job before
+   packaging. Then: SMAppService once signed; dock-less mode.
 5. Packaging: signed + notarized `.app`, DMG. TCC permissions (mic, system
    audio) get prompted for the *app bundle* — document the migration; this
    kills the "restart your terminal" wart, which is itself a UX win.

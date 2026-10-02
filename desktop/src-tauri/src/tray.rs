@@ -4,11 +4,12 @@
 //! every mutation funnels through `refresh` so the menu can never disagree
 //! with the last event received.
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{App, AppHandle, Manager, Wry};
 
 use crate::daemon::{self, Phase};
+use crate::login_item::LoginItem;
 
 pub struct TrayHandles {
     tray: TrayIcon,
@@ -18,9 +19,11 @@ pub struct TrayHandles {
     record_meeting: MenuItem<Wry>,
     dismiss_meeting: MenuItem<Wry>,
     open_last: MenuItem<Wry>,
+    login: CheckMenuItem<Wry>,
+    login_item: Option<LoginItem>,
 }
 
-pub fn setup(app: &App) -> tauri::Result<()> {
+pub fn setup(app: &App, login_item: Option<LoginItem>) -> tauri::Result<()> {
     let status_line = MenuItem::with_id(app, "status", "Starting daemon…", false, None::<&str>)?;
     let start = MenuItem::with_id(app, "start", "Start recording", false, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Stop recording", false, None::<&str>)?;
@@ -30,6 +33,16 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         MenuItem::with_id(app, "dismiss-meeting", "Dismiss this meeting", false, None::<&str>)?;
     let open_last = MenuItem::with_id(app, "open-last", "Open last note", false, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "Open whisper-to-me", true, None::<&str>)?;
+    let login = match &login_item {
+        Some(item) => {
+            let on = item.is_enabled();
+            CheckMenuItem::with_id(app, "login", "Launch at login", true, on, None::<&str>)?
+        }
+        None => {
+            let text = "Launch at login (bundled app only)";
+            CheckMenuItem::with_id(app, "login", text, false, false, None::<&str>)?
+        }
+    };
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
     let menu = Menu::with_items(
@@ -44,6 +57,7 @@ pub fn setup(app: &App) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &open_last,
             &show,
+            &login,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -66,6 +80,8 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         record_meeting,
         dismiss_meeting,
         open_last,
+        login,
+        login_item,
     });
     Ok(())
 }
@@ -80,11 +96,28 @@ fn on_menu(app: &AppHandle, id: &str) {
                 daemon::answer_prompt(&p.id, id == "record-meeting");
             }
         }
+        "login" => toggle_login(app),
         "open-last" => open_last_note(app),
         "show" => show_main(app),
         "quit" => app.exit(0),
         _ => {}
     }
+}
+
+/// The click has already flipped the checkmark; write that state, then
+/// re-read the plist so the checkmark never claims a write that failed.
+fn toggle_login(app: &AppHandle) {
+    let Some(handles) = app.try_state::<TrayHandles>() else {
+        return;
+    };
+    let Some(item) = &handles.login_item else {
+        return;
+    };
+    let wanted = handles.login.is_checked().unwrap_or(false);
+    if let Err(err) = item.set_enabled(wanted) {
+        eprintln!("launch at login: could not write the LaunchAgent: {err}");
+    }
+    let _ = handles.login.set_checked(item.is_enabled());
 }
 
 pub fn show_main(app: &AppHandle) {
