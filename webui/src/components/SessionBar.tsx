@@ -3,6 +3,7 @@ import { useStore } from "../store";
 import { api } from "../api/client";
 import { resyncStatus } from "../ws";
 import type { ApiError } from "../api/client";
+import { canStartRecording, canStop, isActive } from "../api/types";
 
 export function SessionBar() {
   const status = useStore((s) => s.status);
@@ -50,31 +51,29 @@ export function SessionBar() {
     return () => clearInterval(timer);
   }, [status.state, status.started]);
 
-  // Status text labels
-  const statusLabels: Record<string, string> = {
-    idle: "Ready",
-    starting: "Starting the recorder…",
-    recording: status.title || "Recording",
-    stopping: "Finishing — transcribing the last audio…",
-    watching: "Watching for meetings…",
-    prompting: status.title ? `Meeting detected — ${status.title}` : "Meeting detected",
-    summarizing: "Summarizing…",
-  };
-  const statusText = statusLabels[status.state] || status.state;
+  const statusText = (() => {
+    switch (status.state) {
+      case "idle":
+        return "Ready";
+      case "prompting":
+        return `Meeting detected — ${status.prompt.title}`;
+      case "starting":
+        return "Starting the recorder…";
+      case "recording":
+        return status.title || "Recording";
+      case "stopping":
+        return "Finishing — transcribing the last audio…";
+      case "summarizing":
+        return "Summarizing…";
+    }
+  })();
 
   // Record button state
   const busy = status.state === "stopping" || status.state === "summarizing";
-  const isStop = status.state === "recording" || status.state === "starting";
-  const recordDisabled = busy || status.state === "prompting" || recordPending;
+  const isStop = canStop(status);
+  const settable = canStartRecording(status);
+  const recordDisabled = busy || recordPending || !(settable || isStop);
   const recordLabel = busy ? (status.state === "stopping" ? "Finishing…" : "Summarizing…") : isStop ? "Stop" : "New meeting";
-
-  // Watch button state
-  const isWatching = status.state === "watching" || status.state === "prompting";
-  const watchDisabled = status.state !== "idle" && status.state !== "watching" && status.state !== "prompting";
-  const watchLabel = isWatching ? "Stop Watching" : "Watch";
-
-  // Settable fields (title/template)
-  const settable = status.state === "idle" || status.state === "watching";
 
   async function onRecordClick() {
     if (recordPending) return;
@@ -90,7 +89,7 @@ export function SessionBar() {
       }
     }, 5000);
 
-    if (status.state === "recording" || status.state === "starting") {
+    if (isStop) {
       // Stop flow
       try {
         await api.recordStop();
@@ -115,28 +114,10 @@ export function SessionBar() {
           toast("Could not start recording.", "error");
         }
         await resyncStatus();
-        if (useStore.getState().status.state === "idle") {
+        if (!isActive(useStore.getState().status)) {
           setView("empty");
         }
       }
-    }
-  }
-
-  async function onWatchClick() {
-    try {
-      if (status.state === "watching" || status.state === "prompting") {
-        await api.watchStop();
-      } else {
-        await api.watchStart();
-      }
-    } catch (err) {
-      const statusErr = err as ApiError;
-      if (statusErr.status === 409) {
-        toast("Already busy — can't do that right now.", "error");
-      } else {
-        toast("Could not reach the daemon.", "error");
-      }
-      await resyncStatus();
     }
   }
 
@@ -170,14 +151,6 @@ export function SessionBar() {
             </option>
           ))}
         </select>
-        <button
-          id="watch-btn"
-          className={"btn btn-ghost" + (isWatching ? " is-active" : "")}
-          disabled={watchDisabled}
-          onClick={onWatchClick}
-        >
-          {watchLabel}
-        </button>
         <button
           id="record-btn"
           className={

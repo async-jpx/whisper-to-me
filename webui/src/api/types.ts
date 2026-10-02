@@ -1,21 +1,58 @@
 /* DTOs for the daemon's REST API. The shapes are pinned by tests/test_api.py
    and server.py — the frontend adapts to the API, never the reverse. */
 
-export type SessionState =
-  | "idle"
-  | "starting"
-  | "recording"
-  | "stopping"
-  | "watching"
-  | "prompting"
-  | "summarizing";
+export type SessionPhase = "starting" | "recording" | "stopping" | "summarizing";
+export type SessionState = "idle" | "prompting" | SessionPhase;
+export type Origin = "manual" | "detected" | "simulate";
 
-export interface Status {
-  state: SessionState;
-  mode?: string | null;
-  title: string | null;
-  started: string | null; // ISO datetime
-  elapsed_s?: number | null;
+export interface MeetingPrompt {
+  id: string;
+  title: string;
+  trigger: "zoom" | "mic";
+  expires_in_s: number;
+  timeout_s: number;
+}
+
+export type Status =
+  | { state: "idle"; origin: null; title: null; started: null; elapsed_s: null; prompt: null }
+  | {
+      state: "prompting";
+      origin: null;
+      title: null;
+      started: null;
+      elapsed_s: null;
+      prompt: MeetingPrompt;
+    }
+  | {
+      state: SessionPhase;
+      origin: Origin;
+      title: string;
+      started: string; // ISO datetime
+      elapsed_s: number;
+      prompt: null;
+    };
+
+export type ActiveStatus = Extract<Status, { state: SessionPhase }>;
+
+export const IDLE_STATUS: Status = {
+  state: "idle",
+  origin: null,
+  title: null,
+  started: null,
+  elapsed_s: null,
+  prompt: null,
+};
+
+export function isActive(s: Status): s is ActiveStatus {
+  return s.state !== "idle" && s.state !== "prompting";
+}
+
+export function canStartRecording(s: Status): boolean {
+  return s.state === "idle" || s.state === "prompting";
+}
+
+export function canStop(s: Status): boolean {
+  return isActive(s) && s.origin !== "simulate" && (s.state === "starting" || s.state === "recording");
 }
 
 export interface NoteMeta {

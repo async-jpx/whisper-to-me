@@ -210,13 +210,3 @@ def meeting_title_hint(trigger: str) -> str | None:
         title = zoom_window_title()
     return title
 
-
-def notify(title: str, message: str) -> None:
-    subprocess.run(
-        [
-            "osascript",
-            "-e",
-            f'display notification "{message}" with title "{title}"',
-        ],
-        capture_output=True,
-    )

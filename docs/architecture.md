@@ -111,9 +111,9 @@ context, which can balloon the KV cache to tens of GB). Default model:
 | Module | Role |
 |---|---|
 | `watch.py` | Meeting detection signals: CoreAudio's "default input device is running" property (any app opening the mic), Zoom's CptHost helper process (runs only during a call), plus permission-gated title hints from Calendar.app and the Zoom window topic. |
-| `runner.py` | `watch_loop`: the poll → detect → record → summarize → wait-for-meeting-end cycle, shared verbatim by `wtm watch` (CLI) and the daemon. |
+| `runner.py` | The daemon's meeting lifecycle as data: one `State` (Idle / Prompting / Active) changed only by pure transitions (detector poll with the 60 s prompt deadline, id-checked answers, start, stop), plus `meeting_end_condition`, the auto-stop rules for a detected recording. |
 | `search.py` | SQLite FTS5 index over the notes (`.wtm-index.sqlite3`, hidden inside the notes dir). Synced lazily on every search by mtime comparison — no watcher needed. `match_all=True` ANDs terms (sidebar search-as-you-type); `match_all=False` ORs them (chat/brief retrieval — a natural-language question ANDs to nothing). |
-| `server.py` | FastAPI daemon, hard-bound to `127.0.0.1` (never configurable). REST endpoints + a `/api/events` WebSocket that fans every pipeline event out to all connected clients through bounded per-client queues (a slow client drops events rather than blocking the recorder). A single `SessionManager` owns the one active record/watch/simulate session and lazily loads the Whisper model once. |
+| `server.py` | FastAPI daemon, hard-bound to `127.0.0.1` (never configurable). REST endpoints + a `/api/events` WebSocket that fans every pipeline event out to all connected clients through bounded per-client queues (a slow client drops events rather than blocking the recorder). A single `SessionManager` owns the `runner.State`, runs the always-on meeting detector, owns the one active session (manual, detected, or simulate), and lazily loads the Whisper model once. |
 | `config.py` | Optional `~/.config/whisper-to-me/config.toml` (notes dir, Obsidian vault, Notion credentials). Read fresh on every use — no daemon restart after edits. Malformed config falls back to defaults, never crashes. |
 | `export.py` | Obsidian export: plain local file copies into a vault, retrofitting YAML frontmatter onto pre-frontmatter notes. Never overwrites an existing vault copy in bulk mode. |
 | `notion_export.py` | The sanctioned Notion push: markdown → Notion blocks, one page created per explicit user action, preview shown first. The only module allowed to touch a non-localhost address. |
@@ -123,7 +123,7 @@ context, which can balloon the KV cache to tens of GB). Default model:
 
 ## How the pieces talk
 
-**Events.** `record_session`, `summarize_and_save`, and `watch_loop` all emit
+**Events.** `record_session` and `summarize_and_save` both emit
 through a single *event sink* — a callable taking one JSON-able dict (`status`,
 `line`, `echoes_dropped`, `brief`, `summarizing`, `saved`, `error`). The CLI's
 default `ConsoleSink` renders them as the console output; the daemon passes its
@@ -132,7 +132,7 @@ is why the CLI and the UI share every code path.
 
 **Threads.** A live session runs: one capture stream + one chunker thread per
 source, one transcription worker per source, and (under the daemon) one
-session thread. Queues carry `(capture_datetime, chunk)` between them; the
+session thread beside the always-running meeting-detector thread. Queues carry `(capture_datetime, chunk)` between them; the
 final transcript is assembled after all workers join.
 
 **Timestamps.** Capture time is authoritative everywhere. Whisper segment

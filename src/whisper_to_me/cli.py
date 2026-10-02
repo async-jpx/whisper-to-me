@@ -2,7 +2,6 @@
 
     wtm devices                 list audio input devices
     wtm record                  record a meeting, live-transcribe, summarize on stop
-    wtm watch                   auto-detect meetings (mic activity) and take notes
     wtm transcribe FILE         transcribe an audio file into a note
     wtm summarize FILE          (re)summarize an existing transcript / text file
     wtm ask "QUESTION"          answer a question across all your notes (local RAG)
@@ -125,33 +124,6 @@ def cmd_simulate(args) -> None:
     _finish(args, transcript_lines, started, title)
 
 
-def cmd_watch(args) -> None:
-    from .runner import WatchOptions, watch_loop
-
-    transcriber = load_transcriber(args.model, args.language)
-    console.print(
-        "[bold cyan]👂 Watching for meetings[/bold cyan] — recording starts "
-        "automatically when your mic goes active (Zoom, Teams, Meet, …). "
-        "Ctrl-C to quit.\n"
-    )
-    opts = WatchOptions(
-        title=args.title,
-        device=args.device,
-        system_device=args.system_device,
-        keep_echoes=args.keep_echoes,
-        use_aec=not args.no_aec,
-        poll=args.poll,
-        silence_timeout=args.silence_timeout,
-        notes_dir=Path(args.notes_dir),
-        ollama_model=args.ollama_model,
-        context=args.context,
-        no_summary=args.no_summary,
-        template=args.template,
-        diarize=args.diarize,
-    )
-    watch_loop(lambda: transcriber, opts)
-
-
 def cmd_transcribe(args) -> None:
     title = args.title or Path(args.file).stem
     transcriber = load_transcriber(args.model, args.language)
@@ -238,8 +210,8 @@ def cmd_templates(_args) -> None:
     console.print(table)
     console.print(
         f"\n[dim]Add or override templates by dropping <name>.md files in "
-        f"{tmpl.USER_TEMPLATES_DIR}. A meeting is auto-matched by title in "
-        "`watch` mode; pass --template NAME to force one.[/dim]"
+        f"{tmpl.USER_TEMPLATES_DIR}. A detected meeting is auto-matched by "
+        "title; pass --template NAME to force one.[/dim]"
     )
 
 
@@ -318,15 +290,6 @@ def cmd_push(args) -> None:
 def cmd_serve(args) -> None:
     from .server import ServerOptions, run_server
 
-    # Watching-with-a-prompt is the daemon's default resting state; the CLI
-    # flags force the old behaviors, else config.toml's [watch] table decides.
-    cfg = load_config()
-    auto_watch = not args.no_watch and (
-        cfg.watch_auto_start if cfg.watch_auto_start is not None else True
-    )
-    confirm_watch = not args.auto_record and (
-        cfg.watch_confirm if cfg.watch_confirm is not None else True
-    )
     opts = ServerOptions(
         model=args.model,
         language=args.language,
@@ -339,8 +302,6 @@ def cmd_serve(args) -> None:
         use_aec=not args.no_aec,
         poll=args.poll,
         silence_timeout=args.silence_timeout,
-        auto_watch=auto_watch,
-        confirm_watch=confirm_watch,
     )
     console.print(
         f"[bold cyan]wtm serve[/bold cyan] — http://127.0.0.1:{args.port} "
@@ -358,15 +319,11 @@ def _add_serve_args(p: argparse.ArgumentParser) -> None:
                    help="disable the filter that drops mic lines duplicating system audio")
     p.add_argument("--no-aec", action="store_true",
                    help="disable acoustic echo cancellation of system audio from the mic")
-    p.add_argument("--poll", type=float, default=3.0, help="seconds between meeting checks (watch sessions)")
+    p.add_argument("--poll", type=float, default=3.0, help="seconds between meeting checks")
     p.add_argument(
         "--silence-timeout", type=float, default=120.0,
-        help="stop watch recordings after this many seconds of silence",
+        help="stop detected recordings after this many seconds of silence",
     )
-    p.add_argument("--no-watch", action="store_true",
-                   help="don't watch for meetings from startup (watching is the default)")
-    p.add_argument("--auto-record", action="store_true",
-                   help="record detected meetings immediately instead of asking first")
     p.add_argument("--model", default="large-v3-turbo",
                    help="Whisper model: large-v3-turbo (default, most accurate) / medium / small / tiny")
     p.add_argument("--language", default=None, help="force language code, e.g. en, fr, ar")
@@ -412,22 +369,6 @@ def main() -> None:
                        help="split 'Others' into Speaker A/B/C — beta, needs `uv sync --extra diarize`")
     _add_common(p_rec)
     p_rec.set_defaults(func=cmd_record)
-
-    p_w = sub.add_parser("watch", help="auto-detect meetings and take notes, Notion-style")
-    p_w.add_argument("--device", type=int, default=None, help="input device index (see `wtm devices`)")
-    p_w.add_argument("--poll", type=float, default=3.0, help="seconds between meeting checks")
-    p_w.add_argument(
-        "--silence-timeout", type=float, default=120.0,
-        help="stop recording after this many seconds of silence",
-    )
-    p_w.add_argument("--keep-echoes", action="store_true",
-                     help="disable the filter that drops mic lines duplicating system audio")
-    p_w.add_argument("--no-aec", action="store_true",
-                   help="disable acoustic echo cancellation of system audio from the mic")
-    p_w.add_argument("--diarize", action="store_true",
-                     help="split 'Others' into Speaker A/B/C — beta, needs `uv sync --extra diarize`")
-    _add_common(p_w)
-    p_w.set_defaults(func=cmd_watch)
 
     p_sim = sub.add_parser(
         "simulate",

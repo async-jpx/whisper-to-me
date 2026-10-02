@@ -17,5 +17,4 @@ except OSError:  # no CoreAudio: not macOS
     stub.meeting_title_hint = lambda trigger: None
     stub.zoom_meeting_active = lambda: False
     stub.mic_in_use_by_others = lambda exclude_pids=frozenset(): None
-    stub.notify = lambda title, message: None
     sys.modules["whisper_to_me.watch"] = stub

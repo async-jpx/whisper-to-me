@@ -6,6 +6,7 @@
 //! shell must never make an off-machine request.
 
 mod daemon;
+mod login_item;
 mod prompt;
 mod tray;
 
@@ -37,7 +38,11 @@ pub fn run() {
                 }
             });
 
-            tray::setup(app)?;
+            let login_item = login_item::LoginItem::current(&app.config().identifier);
+            if let Some(Err(err)) = login_item.as_ref().map(|item| item.ensure()) {
+                eprintln!("launch at login: could not write the LaunchAgent: {err}");
+            }
+            tray::setup(app, login_item)?;
 
             let handle = app.handle().clone();
             std::thread::spawn(move || daemon::boot(handle));

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
-from whisper_to_me import notes
+from whisper_to_me import notes, runner
 from whisper_to_me.server import ServerOptions, _safe_note_path, create_app
 
 NOTE = """\
@@ -24,12 +25,27 @@ NOTE = """\
 """
 
 
+class ScriptedProbe:
+    def __init__(self, trigger=None, hint=None):
+        self.trigger = trigger
+        self.hint = hint
+
+    def detect(self):
+        return self.trigger
+
+    def title_hint(self, trigger):
+        return self.hint
+
+
+def _make_live(manager, title, started):
+    plan = runner.manual_plan(title, None, started)
+    manager._state = runner.Active(plan, "recording", started, threading.Event())
+
+
 @pytest.fixture()
 def client(tmp_path):
     (tmp_path / "note.md").write_text(NOTE, encoding="utf-8")
-    # auto_watch off: these tests exercise endpoints from a known-idle daemon
-    # (the auto-watch default gets its own dedicated test below).
-    app = create_app(ServerOptions(notes_dir=tmp_path, auto_watch=False))
+    app = create_app(ServerOptions(notes_dir=tmp_path), probe=ScriptedProbe())
     with TestClient(app) as client:
         client.notes_dir = tmp_path
         client.manager = app.state.manager
@@ -44,6 +60,13 @@ def test_list_and_get_note(client):
 
 def test_get_unknown_note_404(client):
     assert client.get("/api/notes/nope.md").status_code == 404
+
+
+def test_prompt_page_is_never_heuristically_cached(client):
+    resp = client.get("/static/prompt.html")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+    assert "/api/prompts/" in resp.text
 
 
 def test_safe_note_path_rejects_traversal_and_non_md(tmp_path):
@@ -82,9 +105,7 @@ def test_patch_bad_index_400(client):
 def test_writes_to_live_journal_rejected(client):
     started = datetime(2026, 7, 6, 10, 0)
     live = notes.start_live_note("Standup", started, client.notes_dir)
-    client.manager.state = "recording"
-    client.manager.title = "Standup"
-    client.manager.started = started
+    _make_live(client.manager, "Standup", started)
 
     for resp in (
         client.put(f"/api/notes/{live.name}", json={"content": "x"}),
@@ -109,9 +130,7 @@ def test_delete_unknown_note_404(client):
 def test_delete_live_journal_rejected(client):
     started = datetime(2026, 7, 6, 10, 0)
     live = notes.start_live_note("Standup", started, client.notes_dir)
-    client.manager.state = "recording"
-    client.manager.title = "Standup"
-    client.manager.started = started
+    _make_live(client.manager, "Standup", started)
     assert client.delete(f"/api/notes/{live.name}").status_code == 409
     assert live.exists()
 
@@ -137,9 +156,7 @@ def test_archive_restore_roundtrip(client):
 def test_archive_live_journal_rejected(client):
     started = datetime(2026, 7, 6, 10, 0)
     live = notes.start_live_note("Standup", started, client.notes_dir)
-    client.manager.state = "recording"
-    client.manager.title = "Standup"
-    client.manager.started = started
+    _make_live(client.manager, "Standup", started)
     assert client.post(f"/api/notes/{live.name}/archive").status_code == 409
     assert live.exists()
 
@@ -214,9 +231,7 @@ def test_vault_copy_of_live_journal_rejected(client, monkeypatch, tmp_path):
     monkeypatch.setattr(server, "load_config", _fake_config(obsidian_vault=tmp_path / "vault"))
     started = datetime(2026, 7, 6, 10, 0)
     live = notes.start_live_note("Standup", started, client.notes_dir)
-    client.manager.state = "recording"
-    client.manager.title = "Standup"
-    client.manager.started = started
+    _make_live(client.manager, "Standup", started)
     assert client.post(f"/api/notes/{live.name}/vault").status_code == 409
 
 
@@ -332,7 +347,7 @@ def test_scratchpad_rejected_when_idle(client):
 
 
 def test_scratchpad_roundtrips_during_session(client):
-    client.manager.state = "recording"
+    _make_live(client.manager, "Standup", datetime(2026, 7, 6, 10, 0))
     resp = client.put("/api/session/scratchpad", json={"content": "decide launch date"})
     assert resp.status_code == 200
     assert client.get("/api/session/scratchpad").json() == {"content": "decide launch date"}
@@ -342,7 +357,7 @@ def test_scratchpad_roundtrips_during_session(client):
 
 
 def test_scratchpad_too_large_rejected(client):
-    client.manager.state = "recording"
+    _make_live(client.manager, "Standup", datetime(2026, 7, 6, 10, 0))
     resp = client.put("/api/session/scratchpad", json={"content": "x" * 100_001})
     assert resp.status_code == 413
     assert client.get("/api/session/scratchpad").json() == {"content": ""}
@@ -535,9 +550,7 @@ def test_followup_happy_path(client, monkeypatch):
 def test_followup_live_journal_409(client):
     started = datetime(2026, 7, 6, 10, 0)
     live = notes.start_live_note("Standup", started, client.notes_dir)
-    client.manager.state = "recording"
-    client.manager.title = "Standup"
-    client.manager.started = started
+    _make_live(client.manager, "Standup", started)
     assert client.post(f"/api/notes/{live.name}/followup").status_code == 409
 
 
@@ -572,8 +585,6 @@ def test_record_lifecycle_states(client, monkeypatch):
     """start -> starting/recording; stop -> stopping (immediately, while the
     session drains) -> idle. Repeat stops are no-ops; starts stay rejected
     until idle. This is the contract the UI's button feedback relies on."""
-    import threading
-
     import whisper_to_me.server as server
 
     release = threading.Event()
@@ -615,7 +626,7 @@ def test_record_lifecycle_states(client, monkeypatch):
     # the daemon is reusable afterwards: a new start is accepted again
     assert client.post("/api/record/start", json={}).status_code == 202
     _wait_for_state(client, "recording")
-    client.manager.stop_record()
+    client.manager.stop()
     release.set()
     _wait_for_state(client, "idle")
 
@@ -624,129 +635,292 @@ def test_stop_record_while_idle_409(client):
     assert client.post("/api/record/stop").status_code == 409
 
 
-def test_manual_record_preempts_watch_and_resumes(client, monkeypatch):
-    """With watch-by-default, 'New meeting' must not 409: an idle watch
-    yields to the manual recording and re-arms itself once the note is
-    saved."""
+def _wait_until(predicate, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition never became true")
+
+
+@pytest.fixture()
+def detecting(tmp_path, monkeypatch):
     import whisper_to_me.server as server
 
-    watch_runs = []
+    loads = []
+    monkeypatch.setattr(
+        server, "load_transcriber", lambda model, language: loads.append(model) or object()
+    )
+    probe = ScriptedProbe()
 
-    def fake_watch_loop(get_transcriber, opts, events=None, stop_event=None, **kwargs):
-        watch_runs.append(True)
-        events({"type": "status", "state": "watching", "title": None, "started": None})
-        stop_event.wait(10)
+    def make(prompt_timeout: float = 30.0, poll: float = 0.01):
+        opts = ServerOptions(notes_dir=tmp_path, poll=poll, prompt_timeout=prompt_timeout)
+        app = create_app(opts, probe=probe)
+        tc = TestClient(app)
+        tc.__enter__()
+        tc.manager = app.state.manager
+        tc.probe = probe
+        tc.loads = loads
+        made.append(tc)
+        return tc
+
+    made = []
+    yield make
+    for tc in made:
+        tc.__exit__(None, None, None)
+
+
+def _status(tc):
+    return tc.get("/api/status").json()
+
+
+def _prompt(tc):
+    _wait_until(lambda: _status(tc)["state"] == "prompting")
+    return _status(tc)["prompt"]
+
+
+def test_boot_is_idle_without_loading_whisper(detecting):
+    tc = detecting()
+    _wait_until(lambda: tc.manager._detector is not None)
+    assert _status(tc) == {
+        "type": "status", "state": "idle", "origin": None, "title": None,
+        "started": None, "elapsed_s": None, "prompt": None,
+    }
+    assert tc.loads == []
+
+
+def test_watch_endpoints_are_gone(client):
+    for path in ("/api/watch/start", "/api/watch/stop", "/api/watch/respond"):
+        assert client.post(path, json={"accept": True}).status_code == 404
+
+
+def test_detected_meeting_prompts_with_a_countdown(detecting):
+    tc = detecting(prompt_timeout=30.0)
+    tc.probe.hint = "Weekly standup"
+    tc.probe.trigger = "zoom"
+    prompt = _prompt(tc)
+    assert prompt["title"] == "Weekly standup" and prompt["trigger"] == "zoom"
+    assert prompt["timeout_s"] == 30.0
+    assert 0 < prompt["expires_in_s"] <= 30.0
+    assert len(prompt["id"]) == 12
+    status = _status(tc)
+    assert (status["origin"], status["title"], status["started"]) == (None, None, None)
+    _wait_until(lambda: tc.loads)
+
+    ws = tc.manager.add_client()
+    frame = ws.queue.get_nowait()
+    assert frame["type"] == "status" and frame["prompt"]["id"] == prompt["id"]
+
+
+def test_record_answer_starts_detected_session_and_stop_works(detecting, monkeypatch):
+    import whisper_to_me.server as server
+
+    calls = {}
+    release = threading.Event()
 
     def fake_record_session(transcriber, title, notes_dir, **kwargs):
+        calls["title"] = title
+        calls["should_stop"] = kwargs["should_stop"]
         kwargs["events"](
-            {
-                "type": "status",
-                "state": "recording",
-                "title": title,
-                "started": kwargs["started"].isoformat(),
-            }
+            {"type": "status", "state": "recording", "title": title,
+             "started": kwargs["started"].isoformat()}
         )
-        kwargs["stop_event"].wait(10)
+        assert kwargs["stop_event"].wait(timeout=10)
+        assert release.wait(timeout=10)
         return [], kwargs["started"]
 
-    monkeypatch.setattr(server, "watch_loop", fake_watch_loop)
+    saved = []
     monkeypatch.setattr(server, "record_session", fake_record_session)
     monkeypatch.setattr(
-        server, "summarize_and_save", lambda *a, **kw: a[3] / "unused.md"
+        server, "summarize_and_save", lambda *a, **kw: saved.append(kw) or a[3] / "x.md"
     )
-    client.manager._transcriber = object()  # skip the Whisper model load
+    tc = detecting()
+    tc.probe.hint = "Weekly standup"
+    tc.probe.trigger = "zoom"
+    first = _prompt(tc)
 
-    assert client.post("/api/watch/start").status_code == 202
-    _wait_for_state(client, "watching")
-    assert len(watch_runs) == 1
+    assert tc.post(f"/api/prompts/{first['id']}", json={"answer": "record"}).status_code == 202
+    _wait_until(lambda: _status(tc)["state"] == "recording")
+    status = _status(tc)
+    assert (status["origin"], status["title"], status["prompt"]) == (
+        "detected", "Weekly standup", None,
+    )
+    assert calls["title"] == "Weekly standup"
+    assert callable(calls["should_stop"])
 
-    # New meeting while watching: preempts instead of 409ing
-    assert client.post("/api/record/start", json={"title": "Manual"}).status_code == 202
+    assert tc.post("/api/record/stop").status_code == 202
+    assert _status(tc)["state"] == "stopping"
+    release.set()
+    _wait_until(lambda: _status(tc)["state"] == "idle")
+    assert saved[0]["template"] == "standup" and saved[0]["auto_title"] is False
+
+    import time
+
+    time.sleep(0.2)
+    assert _status(tc)["state"] == "idle"
+    tc.probe.trigger = None
+    time.sleep(0.1)
+    tc.probe.trigger = "mic"
+    assert _prompt(tc)["id"] != first["id"]
+
+
+def test_unanswered_prompt_times_out_and_sits_out(detecting):
+    import time
+
+    tc = detecting(prompt_timeout=0.3)
+    tc.probe.trigger = "zoom"
+    prompt = _prompt(tc)
+    _wait_until(lambda: _status(tc)["state"] == "idle", timeout=2.0)
+    resp = tc.post(f"/api/prompts/{prompt['id']}", json={"answer": "record"})
+    assert resp.status_code == 409 and resp.json()["detail"] == "prompt expired"
+    time.sleep(0.5)
+    assert _status(tc)["state"] == "idle"
+
+
+def test_timeout_lands_on_the_deadline_not_the_next_poll(detecting):
+    import time
+
+    tc = detecting(prompt_timeout=0.3, poll=30.0)
+    tc.probe.trigger = "zoom"
+    tc.manager._wake.set()
+    _prompt(tc)
+    began = time.monotonic()
+    _wait_until(lambda: _status(tc)["state"] == "idle", timeout=3.0)
+    assert time.monotonic() - began < 2.0
+
+
+def test_stale_answer_cannot_start_the_next_prompt(detecting):
+    import time
+
+    tc = detecting(prompt_timeout=0.3)
+    tc.probe.trigger = "zoom"
+    first = _prompt(tc)
+    _wait_until(lambda: _status(tc)["state"] == "idle", timeout=2.0)
+    tc.probe.trigger = None
+    time.sleep(0.1)
+    tc.probe.trigger = "zoom"
+    second = _prompt(tc)
+    assert second["id"] != first["id"]
+
+    resp = tc.post(f"/api/prompts/{first['id']}", json={"answer": "record"})
+    assert resp.status_code == 409
+    status = _status(tc)
+    assert status["state"] == "prompting" and status["prompt"]["id"] == second["id"]
+
+
+def test_dismiss_goes_idle_at_once(detecting):
+    tc = detecting()
+    tc.probe.trigger = "mic"
+    prompt = _prompt(tc)
+    url = f"/api/prompts/{prompt['id']}"
+    assert tc.post(url, json={"answer": "maybe"}).status_code == 422
+    assert tc.post(url, json={"answer": "dismiss"}).status_code == 202
+    assert _status(tc)["state"] == "idle"
+    assert tc.post(url, json={"answer": "record"}).status_code == 409
+
+
+def test_prompt_ends_when_the_meeting_does(detecting):
+    tc = detecting()
+    tc.probe.trigger = "zoom"
+    _prompt(tc)
+    tc.probe.trigger = None
+    _wait_until(lambda: _status(tc)["state"] == "idle")
+
+
+def test_manual_record_supersedes_a_prompt(detecting, monkeypatch):
+    import whisper_to_me.server as server
+
+    def fake_record_session(transcriber, title, notes_dir, **kwargs):
+        assert kwargs["should_stop"] is None
+        kwargs["events"](
+            {"type": "status", "state": "recording", "title": title,
+             "started": kwargs["started"].isoformat()}
+        )
+        kwargs["stop_event"].wait(timeout=10)
+        return [], kwargs["started"]
+
+    monkeypatch.setattr(server, "record_session", fake_record_session)
+    monkeypatch.setattr(server, "summarize_and_save", lambda *a, **kw: a[3] / "x.md")
+    tc = detecting()
+    tc.probe.trigger = "zoom"
+    prompt = _prompt(tc)
+
+    assert tc.post("/api/record/start", json={"title": "Manual"}).status_code == 202
+    status = _status(tc)
+    assert status["origin"] == "manual" and status["prompt"] is None
+    assert tc.post(f"/api/prompts/{prompt['id']}", json={"answer": "record"}).status_code == 409
+    _wait_until(lambda: _status(tc)["state"] == "recording")
+    assert tc.post("/api/record/stop").status_code == 202
+    _wait_until(lambda: _status(tc)["state"] == "idle")
+
+
+def test_simulate_cannot_be_stopped(client, monkeypatch):
+    import whisper_to_me.server as server
+
+    release = threading.Event()
+
+    def fake_simulate_session(transcriber, title, notes_dir, mic_path, **kwargs):
+        kwargs["events"](
+            {"type": "status", "state": "recording", "title": title,
+             "started": datetime.now().isoformat()}
+        )
+        assert release.wait(timeout=10)
+        return [], datetime.now()
+
+    monkeypatch.setattr(server, "simulate_session", fake_simulate_session)
+    monkeypatch.setattr(server, "summarize_and_save", lambda *a, **kw: a[3] / "x.md")
+    client.manager._transcriber = object()
+    wav = client.notes_dir / "a.wav"
+    wav.write_bytes(b"")
+    assert client.post("/api/simulate", json={"mic": str(wav)}).status_code == 202
     _wait_for_state(client, "recording")
-
-    # …and stopping the manual recording re-arms the watch
-    assert client.post("/api/record/stop").status_code == 202
-    _wait_for_state(client, "watching")
-    assert len(watch_runs) == 2
-
-    assert client.post("/api/watch/stop").status_code == 202
+    assert client.get("/api/status").json()["origin"] == "simulate"
+    assert client.post("/api/record/stop").status_code == 409
+    release.set()
     _wait_for_state(client, "idle")
 
 
-# ---------- watch prompt flow (watch_loop is faked: no audio devices) ----
-
-
-def test_watch_respond_while_idle_409(client):
-    assert client.post("/api/watch/respond", json={"accept": True}).status_code == 409
-
-
-def test_watch_prompt_accept_roundtrip(client, monkeypatch):
-    """watch start -> prompting; /api/watch/respond hands the decision to the
-    loop; stop returns the daemon to idle and expires the prompt."""
-    import threading
+def test_shutdown_saves_the_active_session(tmp_path, monkeypatch):
     import time
 
     import whisper_to_me.server as server
 
-    got = {}
-    answered = threading.Event()
+    def fake_record_session(transcriber, title, notes_dir, **kwargs):
+        kwargs["events"](
+            {"type": "status", "state": "recording", "title": title,
+             "started": kwargs["started"].isoformat()}
+        )
+        assert kwargs["stop_event"].wait(timeout=10)
+        time.sleep(0.3)
+        return [("0:00:01", "hello")], kwargs["started"]
 
-    def fake_watch_loop(
-        get_transcriber, opts, events=None, stop_event=None,
-        scratchpad=None, clear_scratchpad=None, decision=None,
-    ):
-        got["confirm"] = opts.confirm
-        events({"type": "status", "state": "prompting", "title": "Standup", "started": None})
-        deadline = time.monotonic() + 5
-        choice = None
-        while choice is None and time.monotonic() < deadline:
-            choice = decision()
-            time.sleep(0.01)
-        got["choice"] = choice
-        answered.set()
-        stop_event.wait(5)
-
-    monkeypatch.setattr(server, "watch_loop", fake_watch_loop)
-
-    assert client.post("/api/watch/start").status_code == 202
-    _wait_for_state(client, "prompting")
-    status = client.get("/api/status").json()
-    assert status["mode"] == "watch" and status["title"] == "Standup"
-
-    assert client.post("/api/watch/respond", json={"accept": True}).status_code == 202
-    assert answered.wait(5)
-    assert got["choice"] == "accept"
-    assert got["confirm"] is True  # the daemon default asks before recording
-
-    assert client.post("/api/watch/stop").status_code == 202
-    _wait_for_state(client, "idle")
-    assert client.post("/api/watch/respond", json={"accept": True}).status_code == 409
+    saved = []
+    monkeypatch.setattr(server, "record_session", fake_record_session)
+    monkeypatch.setattr(
+        server, "summarize_and_save", lambda *a, **kw: saved.append(a[1]) or a[3] / "x.md"
+    )
+    app = create_app(ServerOptions(notes_dir=tmp_path), probe=ScriptedProbe())
+    with TestClient(app) as tc:
+        app.state.manager._transcriber = object()
+        assert tc.post("/api/record/start", json={}).status_code == 202
+        _wait_for_state(tc, "recording")
+    assert saved == [[("0:00:01", "hello")]]
+    assert app.state.manager.status()["state"] == "idle"
 
 
-def test_auto_watch_starts_on_startup(tmp_path, monkeypatch):
-    """The daemon's resting state is watching: create_app with the default
-    auto_watch starts a watch session during startup — without loading the
-    Whisper model (get_transcriber must stay uncalled until a recording)."""
-    import threading
+def test_a_failing_probe_does_not_end_detection(detecting):
+    tc = detecting()
+    failures = []
 
-    import whisper_to_me.server as server
+    def flaky():
+        if len(failures) < 3:
+            failures.append(1)
+            raise OSError("pgrep: fork failed")
+        return "zoom"
 
-    started = threading.Event()
-    transcriber_loads = []
-
-    def fake_watch_loop(
-        get_transcriber, opts, events=None, stop_event=None, **kwargs
-    ):
-        transcriber_loads.append(get_transcriber)  # captured, never called
-        events({"type": "status", "state": "watching", "title": None, "started": None})
-        started.set()
-        stop_event.wait(5)
-
-    monkeypatch.setattr(server, "watch_loop", fake_watch_loop)
-    app = create_app(ServerOptions(notes_dir=tmp_path))  # auto_watch default: on
-    with TestClient(app) as client:
-        assert started.wait(5)
-        assert client.get("/api/status").json()["state"] == "watching"
-        assert app.state.manager._transcriber is None  # Whisper not loaded
-        assert client.post("/api/watch/stop").status_code == 202
-        _wait_for_state(client, "idle")
+    tc.probe.detect = flaky
+    assert _prompt(tc)["trigger"] == "zoom"
+    assert len(failures) == 3

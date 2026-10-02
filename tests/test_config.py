@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import tomllib
 from pathlib import Path
 
 from whisper_to_me.config import Config, load_config, save_config
@@ -54,26 +55,13 @@ def test_wrong_types_are_ignored(tmp_path):
     assert load_config(path) == Config()
 
 
-def test_watch_table(tmp_path):
+def test_legacy_watch_table_loads(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text("[watch]\nauto_start = false\nconfirm = true\n", encoding="utf-8")
-    cfg = load_config(path)
-    assert cfg.watch_auto_start is False
-    assert cfg.watch_confirm is True
-
-
-def test_watch_defaults_unset(tmp_path):
-    cfg = load_config(tmp_path / "nope.toml")
-    assert cfg.watch_auto_start is None  # None = the caller's default applies
-    assert cfg.watch_confirm is None
-
-
-def test_watch_wrong_types_are_ignored(tmp_path):
-    path = tmp_path / "config.toml"
-    path.write_text('[watch]\nauto_start = "yes"\nconfirm = 1\n', encoding="utf-8")
-    cfg = load_config(path)
-    assert cfg.watch_auto_start is None
-    assert cfg.watch_confirm is None
+    path.write_text(
+        '[watch]\nauto_start = false\nconfirm = true\n\n[obsidian]\nvault = "/tmp/v"\n',
+        encoding="utf-8",
+    )
+    assert load_config(path) == Config(obsidian_vault=Path("/tmp/v"))
 
 
 # -- save_config (UI Settings → Connections) ---------------------------------
@@ -150,13 +138,12 @@ def test_save_file_is_user_only(tmp_path):
     assert mode == 0o600  # holds a secret; not group/world readable
 
 
-def test_save_keeps_watch_booleans_typed(tmp_path):
-    """A hand-written [watch] table must survive a UI settings save with its
-    TOML types intact — booleans must not come back as strings."""
+def test_save_keeps_unknown_booleans_typed(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[watch]\nauto_start = false\n", encoding="utf-8")
     save_config({"obsidian_vault": "/tmp/v"}, path)
-    assert load_config(path).watch_auto_start is False
+    with path.open("rb") as fh:
+        assert tomllib.load(fh)["watch"] == {"auto_start": False}
 
 
 def test_save_over_malformed_file_starts_clean(tmp_path):

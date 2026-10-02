@@ -20,3 +20,9 @@ serde_json = "1"
 ureq = { version = "2", features = ["json"] }
 tungstenite = "0.24"
 libc = "0.2"
+
+# Already in the lock graph through tao; the overlay needs AppKit calls tao
+# does not expose (see prompt.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPanel", "NSResponder", "NSWindow"] }

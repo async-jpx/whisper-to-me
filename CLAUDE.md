@@ -19,7 +19,6 @@ any change that widens this path.
 uv sync                     # install deps (Python 3.12, managed by uv)
 uv run wtm devices          # list audio inputs
 uv run wtm record           # record + live-transcribe + summarize (Ctrl-C stops)
-uv run wtm watch            # auto-detect meetings, Notion-style (CLI auto-records)
 uv run wtm transcribe F     # audio file -> note
 uv run wtm summarize F [--user-notes F] [--template NAME]  # re-summarize a transcript
 uv run wtm ask "QUESTION"   # local RAG over all notes: cited answer from Ollama
@@ -29,9 +28,8 @@ uv run wtm simulate --mic F [--system F] [--diarize]  # replay files through the
 uv run wtm export [--obsidian PATH]  # copy notes into an Obsidian vault (local files)
 uv run wtm push NOTE.md     # push ONE note to Notion (opt-in + confirmed; see above)
 uv run wtm serve / wtm ui   # local daemon (127.0.0.1:8737) / + open web UI —
-                            # watches from boot + prompts before recording;
-                            # --no-watch / --auto-record (or [watch] in
-                            # config.toml) restore the old behaviors
+                            # meeting detection always on; a detected meeting
+                            # is a 60 s Record/Dismiss prompt, never auto-recorded
 uv run ruff check src/     # lint (also runs via hook on edits)
 uv run pytest tests/       # unit + API tests
 uv sync --extra diarize    # optional: speaker diarization stack (torch — heavy)
@@ -45,8 +43,8 @@ cd webui && npm run build   # tsc --noEmit + vite build -> src/whisper_to_me/sta
 cd webui && npm run dev     # Vite dev server on :5173, /api (incl. WS) proxied to a daemon on 8737
 ```
 
-Phase-4 flags: `record`/`watch`/`simulate` take `--diarize` (split "Others"
-into Speaker A/B/C, beta); `record`/`watch`/`simulate`/`transcribe`/`summarize`
+Phase-4 flags: `record`/`simulate` take `--diarize` (split "Others"
+into Speaker A/B/C, beta); `record`/`simulate`/`transcribe`/`summarize`
 take `--template NAME`; `summarize` also takes `--user-notes FILE`. The UI adds
 a live scratchpad (notes-first summaries), a template picker, a 💬 Ask chat
 view, "Draft follow-up email" in the Export menu, and "Last time…" briefs.
@@ -120,16 +118,22 @@ watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process;
                docs/meeting-detection.md for the research + design
 session.py     orchestration: sources ("You" mic / "Others" system), workers,
                per-segment timestamps, turn-merged transcript, summarize_and_save
-runner.py      watch_loop: meeting-detection loop shared by CLI and daemon;
-               confirm mode (daemon default) holds a "prompting" state +
-               meeting_detected event until accept/ignore; recordings auto-
-               stop on Zoom-helper exit / mic release / silence timeout
+runner.py      the daemon's meeting lifecycle as data: State = Idle(sitting_out)
+               | Prompting(Prompt) | Active(SessionPlan, phase, started, stop),
+               frozen values changed only by pure transitions (observe with
+               the 60 s prompt deadline, open_prompt CAS, id-checked answer,
+               start/stop); meeting_end_condition = the auto-stop for detected
+               recordings (Zoom-helper exit / mic release / silence timeout)
 server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
-               fan-out; single SessionManager owns the one active session;
-               auto-starts watch on boot (ServerOptions.auto_watch) and routes
-               prompt answers via POST /api/watch/respond {"accept": bool};
-               manual record/simulate preempt an idle (watching/prompting —
-               never recording) watch and re-arm it when the session ends;
+               fan-out; single SessionManager owns the one runner.State and
+               applies every change via _transition(fn) under _lock (status
+               frames enqueued inside it; lock order _lock → _clients_lock);
+               a detector thread (MeetingProbe seam) runs startup→shutdown,
+               pauses while Active; prompts answered via POST
+               /api/prompts/{id} {"answer": "record"|"dismiss"} (409 when
+               stale/expired); record/start supersedes a prompt; record/stop
+               stops manual + detected (not simulate), never detection; the
+               shutdown hook (close) joins the session so SIGTERM saves it;
                /api/settings connects Obsidian/Notion by writing config.toml
                (save_config) — no network, the token never leaves via the wire;
                POST /api/chat/stream streams chat answers as SSE in the AI SDK
@@ -139,15 +143,22 @@ search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
                has match_all (AND, sidebar default) vs OR (chat/briefs) mode
 webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
                Vite + Zustand, all deps bundled locally (no CDN, no runtime
-               network). src/legacy.css is the original stylesheet verbatim —
+               network). src/legacy.css is the original stylesheet (minus
+               rules for deleted UI) —
                components reuse its class names for pixel parity; Tailwind
                utilities (no preflight — it would fight legacy.css) layer on
                top via @theme tokens. store.ts + ws.ts are the WS-authoritative
                status model (backoff reconnect, resync-on-focus, recordPending
-               5s failsafe); components cover #note= deep links, live
+               5s failsafe); api/types.ts `Status` is a union mirroring
+               status_wire (idle | prompting+prompt | session phase+origin);
+               only Active phases switch to the live view or show "Live
+               session". The web UI never answers prompts — the status line
+               just says "Meeting detected — …" and New meeting stays enabled
+               (it supersedes the prompt); the overlay and tray answer.
+               Components cover #note= deep links, live
                scratchpad, template picker, chat view, briefs, Settings →
-               Connections, export menu (incl. the confirmed Notion push),
-               and the floating meeting prompt. Editors are CodeMirror 6
+               Connections, export menu (incl. the confirmed Notion push).
+               Editors are CodeMirror 6
                (MarkdownEditor.tsx + lib/cm.ts commands); the chat view runs
                on @ai-sdk/react useChat (module-level Chat instance keeps the
                conversation across view switches) against /api/chat/stream
@@ -155,13 +166,23 @@ static/        dist/ — the committed Vite build, served at / (Cache-Control:
                no-cache; assets are content-hashed) and /static/dist/*; and
                prompt.html — a standalone hand-written widget page for the
                desktop overlay, hard-coded as /static/prompt.html in
-               desktop prompt.rs — keep it a plain static file
+               desktop prompt.rs — keep it a plain static file. It answers
+               POST /api/prompts/{id}, counts down from expires_in_s (display
+               only — never posts a dismiss at 0) and re-fetches /api/status
+               on any non-2xx so its buttons follow the latest frame
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →
-               http://127.0.0.1:8737, tray mirrors /api/events, notifications;
-               prompt.rs shows/hides the always-on-top meeting-prompt overlay
-               (loads /static/prompt.html) on the "prompting" state
+               http://127.0.0.1:8737, tray mirrors /api/events (status frame
+               parsed once into daemon::Status: Phase/Origin/Prompt; prompt
+               answers POST /api/prompts/{id}), notifications (saved/error
+               only — the overlay is the detection notice); prompt.rs shows
+               the overlay (loads /static/prompt.html) once per new prompt
+               id and hides it when `prompt` is null or the daemon goes
+               offline — a non-activating NSPanel over full-screen Spaces;
+               login_item.rs = tray "Launch at login" (bundled .app only):
+               ~/Library/LaunchAgents/<identifier>.plist running
+               `open -a <bundle>`, `Disabled` key = opted out
 ```
 
 Key invariants:
@@ -175,7 +196,7 @@ Key invariants:
   the final note is written, so one complete copy always exists.
 - The Notion push is the only code allowed to touch a non-localhost address,
   and only from `wtm push` / `POST /api/notes/{name}/notion` — both per-note
-  and user-confirmed. Never wire it into record/watch/summarize/anything
+  and user-confirmed. Never wire it into record/detection/summarize/anything
   automatic, and never send the token anywhere but `api.notion.com`. Connecting
   Notion in the UI (`PUT /api/settings/notion` → `save_config`) only writes the
   token to local disk; it must stay a pure disk write — never add a "verify the
@@ -258,8 +279,8 @@ Key invariants:
 - **Scratchpad sidecar stays out of the notes glob** (`.wtm-scratchpad.txt`,
   server.py): it's crash-safety for the live scratchpad, but it must never be
   a note — it works only because `*.md` globs and `_safe_note_path` exclude it.
-  Cleared on session start and after each meeting's save (watch clears per
-  meeting, or meeting 2 inherits meeting 1's notes).
+  Cleared on session start and after each meeting's save (per meeting, or
+  meeting 2 inherits meeting 1's notes).
 - **SCStream must stay strongly referenced** after `startCapture` — if the
   setup Task's local is the only reference, capture silently stops after ~1
   buffer. `activeStream` global exists for this.
@@ -282,13 +303,21 @@ Key invariants:
   VAD rejects noise downstream. Don't "fix" it upward without a listening test.
 - **Mic-release auto-stop must never count ourselves** (watch.py/runner.py):
   `mic_in_use_by_others` excludes our pid *and* every `Recorder.helper_pid`
-  (the system-audio tap is a child process) — forget one and every watch
+  (the system-audio tap is a child process) — forget one and every detected
   recording runs forever (or worse, our own tap keeps "the meeting" alive).
   The signal also only arms after another process was actually seen on the
   mic (`call_app_seen`), and `None` (API missing, pre-macOS-14) must stay "no
-  signal → silence timeout", never a stop. On "ignore", the runner emits
-  status `watching` *before* waiting out the meeting — the prompt popups hide
-  on that event; hold the state and the widget lingers for the whole meeting.
+  signal → silence timeout", never a stop (runner.meeting_end_condition).
+- **Dismiss/timeout → `Idle(sitting_out=True)`, broadcast immediately**
+  (runner.py/server.py): "sitting out" the rest of a handled meeting is a
+  property of Idle, never a wire state — the frame says plain `idle` the
+  instant a prompt is dismissed, times out, or a session ends, and the prompt
+  surfaces hide on it. Don't model sit-out as a wait loop that delays the
+  status (the old watch loop did, and the widget lingered for the whole
+  meeting). A prompt answer must name the live prompt's id and beat its
+  deadline (`runner.answer` → `Refused`); never reintroduce a pending-decision
+  mailbox — with one, a late answer could be consumed by the next meeting's
+  prompt and start recording without consent.
 - **Echo filter must stay onset-aligned** (dedup.py): a genuine quick reply
   often reuses the other speaker's words ("Yes, it moved to Friday" right
   after "I think it was moved to Friday") and *will* fuzzy-match. Only a
@@ -297,6 +326,22 @@ Key invariants:
 - **Tray `set_title(None)` does not clear the title on macOS** (desktop
   tray.rs): after "summarizing" set the title to `Some("")`, or the "…" sticks
   in the menu bar forever. Verified the hard way; keep the always-`Some` form.
+- **The meeting overlay must never activate us** (desktop prompt.rs): tao's
+  `show()` is makeKeyAndOrderFront — it pulls the user out of a full-screen
+  call Space. The overlay is built `focusable(false)` + `accept_first_mouse`,
+  then (main thread only) re-classed in place to a runtime NSPanel subclass
+  `WtmOverlayPanel` via `object_setClass`, given `NonactivatingPanel`,
+  `hidesOnDeactivate = NO`, CanJoinAllSpaces|FullScreenAuxiliary|Stationary|
+  IgnoresCycle, `NSStatusWindowLevel`, and shown with
+  `orderFrontRegardless`. The swap is guarded: walk the class chain to
+  `TaoWindow` (the live class is KVO's `NSKVONotifying_TaoWindow`) and
+  require equal instance sizes + the same `focusable` ivar offset, else log
+  and keep the plain window (still floats, but a click activates us). The
+  private `_setPreventsActivation:` is called only if `respondsToSelector:`
+  — without it a click on the panel still activates the app. The swap drops
+  the KVO subclass, so the overlay is created once and never closed or
+  destroyed (hide/order-out only); tearing it down is unexercised. Verify with
+  CGWindowList (layer 25) + frontmost app over a full-screen Terminal.
 - **Notifications carry the app's identity only from a bundled build**: the
   bare `target/debug` binary's notifications are attributed to the terminal
   app (name + icon). Test identity with `npx tauri build --bundles app` and
@@ -305,6 +350,25 @@ Key invariants:
   SIGTERM (= save + summarize, like Ctrl-C) and a 5 s grace; if still busy it
   is *left running* to finish the note. Also: a daemon that was already
   running on the port is not ours — attach, never kill.
+- **launchd kills the daemon we leave running when a launchd-started app
+  exits** (desktop daemon.rs): a LaunchAgent that execs the binary directly
+  (even with AbandonProcessGroup or `process_group(0)`), *and* any
+  LaunchServices launch — `open -a`, Finder, Dock, the login item; the app
+  runs as job `application.<bundle-id>.*` — lose the daemon the moment the
+  app exits. A SIGSTOPped daemon dies too, so it is a SIGKILL: a note still
+  summarizing past the 5 s grace is lost. Only a shell-launched app's daemon
+  survives. Not fixed yet; the fix is to run the daemon outside the app's
+  job. Re-test with a SIGSTOPped daemon + tray Quit, comparing a shell
+  launch against `open -a`.
+- **Launch at login is bundle-only and plist-only** (desktop login_item.rs):
+  offered only when `current_exe` sits in `<X>.app/Contents/MacOS/` (the dev
+  binary shows it disabled). The plist runs `/usr/bin/open -a <bundle>` (a
+  real app launch, the same as a double-click), never the binary itself.
+  Every launch rewrites it so a moved .app never leaves a stale path; the
+  opt-out is the `Disabled` key (launchd honours it), and the plist is the
+  only state. It is never bootstrapped at runtime — it takes effect at the
+  next login. If the user turns it off in System Settings → Login Items, the
+  checkbox does not know.
 - **FDAF adaptation must use the true error** (echo_cancel.py): adapt on
   `block − y_hat`, never on the protected output — adapting on the substituted
   signal keeps adding a full step to already-wrong weights and the filter
