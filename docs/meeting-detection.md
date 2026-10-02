@@ -31,7 +31,7 @@ Takeaways we adopted:
 
 ## Our signals
 
-### Start (unchanged): `watch.detect_meeting()`
+### Start: `watch.detect_meeting()`
 
 - **Zoom**: the `CptHost` helper process only exists during an active call —
   precise start *and* end.
@@ -62,40 +62,62 @@ Takeaways we adopted:
 3. **Silence timeout** (pre-existing fallback): no audio above the energy
    gate on any source for `--silence-timeout` seconds (default 120).
 
-### The prompt flow (daemon default)
+### The lifecycle: always-on detection and a timed prompt
+
+There is no watch mode. Detection runs from the moment `wtm serve` starts until
+it shuts down, and the daemon's state is one value (`runner.State`):
 
 ```
-boot ──▶ watching ──detect──▶ prompting ──accept──▶ recording ──end──▶ summarize ──▶ watching
-                                  │  │
-                                  │  └─ignore──────▶ (sit out this meeting) ──▶ watching
-                                  └─meeting ends unanswered─▶ watching
+          ┌──────────── meeting ends unanswered ─────────────┐
+          ▼                                                   │
+boot ──▶ idle ──detect──▶ prompting ──Record──▶ recording ──end/Stop──▶ summarizing ──▶ idle (sits out)
+          ▲                │   │
+          │                │   └──Dismiss, or 60 s unanswered──▶ idle (sits out)
+          │                └──Start recording / simulate──▶ recording (manual / simulate)
+          └── sitting out clears once the meeting's trigger goes away
 ```
 
-- `wtm serve` starts watching on boot (`--no-watch` / `[watch] auto_start =
-  false` to disable) and asks before recording (`--auto-record` / `[watch]
-  confirm = false` for the old behavior). The Whisper model is only loaded
-  when a recording actually starts — a prompt preloads it in the background
-  so an accepted meeting starts transcribing immediately.
-- The prompt surfaces in three places, all driven by the same
-  `state: "prompting"` status event: the web UI's floating card, the desktop
-  app's small always-on-top overlay window (`/static/prompt.html`, top-right,
-  never steals focus), and the tray menu ("Record this meeting" / "Ignore
-  this meeting"). Answers all land on `POST /api/watch/respond
-  {"accept": bool}`.
-- `wtm watch` in a terminal keeps the old auto-record behavior — running it
-  is itself the explicit intent to record.
-- A manual "New meeting" (or a simulation) while the daemon is watching or
-  prompting *preempts* the idle watch instead of failing with "busy", and the
-  watch re-arms itself once that session's note is saved — the daemon always
-  returns to its resting state. A watch that is actively recording is never
-  preempted.
+- **Idle.** The detector polls `detect_meeting()` every `--poll` seconds
+  (default 3). There is no "watching" state on the wire: idle *is* watching.
+- **Prompting.** A detected meeting opens a prompt with a random id and a
+  60-second deadline. The calendar/Zoom title hint is fetched before the
+  prompt opens, so the user gets the full 60 seconds. The Whisper model
+  preloads in the background so an accepted meeting starts transcribing at
+  once. The status frame carries `prompt.expires_in_s`, computed when the
+  frame is sent; clients only display the countdown.
+- **Answers name the prompt.** `POST /api/prompts/{id}` with
+  `{"answer": "record" | "dismiss"}`. Any answer that is not for the live
+  prompt, or that arrives after its deadline, gets 409 `prompt expired`. A
+  late click can never start the next meeting's recording.
+- **The timeout is a dismiss.** At the deadline the daemon resolves the prompt
+  on its own clock (its sleep is clamped to the deadline) and broadcasts plain
+  `idle` at once, so every prompt surface hides immediately.
+- **Sitting out.** After a dismiss, a timeout, or the end of *any* session,
+  the daemon is `Idle(sitting_out=True)`: it does not prompt again for the
+  meeting that is still live. It clears when `detect_meeting()` returns None,
+  so the next meeting prompts normally. If the meeting ends while its prompt
+  is up, the prompt closes and nothing is sat out.
+- **Manual record and simulate supersede a prompt.** "Start recording" is
+  allowed while prompting; the prompt goes away in the same transition.
+- **Stop works on every recording.** `POST /api/record/stop` stops manual and
+  accepted (detected) recordings alike and never stops detection. A detected
+  recording also ends on its own through the three end signals above.
+- **While a session runs, detection pauses.** Our own recorder keeps the
+  input device running, so the `mic` trigger would always be true.
+- **Shutdown.** SIGTERM (the desktop app's quit) stops the active recording
+  and waits for the note to be saved and summarized before the daemon exits.
+
+The prompt surfaces are the desktop app's always-on-top overlay window
+(`/static/prompt.html`, never steals focus) and its tray menu. `wtm serve`
+without the desktop app has no prompt surface, so its prompts time out.
 
 ## Verification status
 
-The state machine, prompt flow, decision plumbing, auto-stop logic (grace,
-re-grab reset, arming guard, zoom end, helper-pid exclusion) and the API are
-covered by `tests/test_watch_prompt.py` + `tests/test_api.py`, which run
-mic-free on any OS. The CoreAudio process-object selectors are taken from the
+The state machine (timeout, sit-out, stale answers, supersede), the auto-stop
+logic (grace, re-grab reset, arming guard, zoom end, helper-pid exclusion) and
+the API (prompt answers, detected stop, shutdown save) are covered by
+`tests/test_meeting_state.py` + `tests/test_api.py`, which run mic-free on any
+OS against a scripted detection probe. The CoreAudio process-object selectors are taken from the
 macOS 14 SDK (`'prs#'`/`'ppid'`/`'piri'`, verified against Apple's generated
 bindings); the live behavior of `mic_in_use_by_others` — including whether
 ScreenCaptureKit's capture shows up as input for some process we don't spawn —

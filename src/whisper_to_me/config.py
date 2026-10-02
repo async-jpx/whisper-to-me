@@ -12,11 +12,6 @@ sent by the sanctioned per-note push (see notion_export.py).
 
     notes_dir = "~/Vault/Meetings"      # save notes here (e.g. inside a vault)
 
-    [watch]
-    auto_start = true                   # daemon watches for meetings from boot
-    confirm = true                      # ask (prompt) before recording; false
-                                        # restores the old auto-record behavior
-
     [obsidian]
     vault = "~/Vault/Meetings"          # target for `wtm export` / Copy to vault
 
@@ -41,9 +36,6 @@ class Config:
     obsidian_vault: Path | None = None
     notion_token: str | None = None
     notion_database_id: str | None = None
-    # None = unset (the caller's default applies, currently True for both).
-    watch_auto_start: bool | None = None
-    watch_confirm: bool | None = None
 
     @property
     def notion_configured(self) -> bool:
@@ -62,10 +54,6 @@ def _string(value: object) -> str | None:
     return value.strip()
 
 
-def _bool(value: object) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
 def load_config(path: Path | None = None) -> Config:
     """Parse the config file; a missing or malformed file is just defaults —
     a typo in the toml must never take recording down."""
@@ -77,20 +65,15 @@ def load_config(path: Path | None = None) -> Config:
         return Config()
     obsidian = data.get("obsidian") or {}
     notion = data.get("notion") or {}
-    watch = data.get("watch") or {}
     if not isinstance(obsidian, dict):
         obsidian = {}
     if not isinstance(notion, dict):
         notion = {}
-    if not isinstance(watch, dict):
-        watch = {}
     return Config(
         notes_dir=_path(data.get("notes_dir")),
         obsidian_vault=_path(obsidian.get("vault")),
         notion_token=_string(notion.get("token")),
         notion_database_id=_string(notion.get("database_id")),
-        watch_auto_start=_bool(watch.get("auto_start")),
-        watch_confirm=_bool(watch.get("confirm")),
     )
 
 
@@ -115,7 +98,8 @@ def _toml_str(value: str) -> str:
 
 def _toml_value(value: object) -> str:
     """Serialize one scalar; bools/numbers keep their TOML types so a
-    hand-written `[watch] auto_start = false` survives a UI settings save."""
+    hand-written boolean (say, a leftover `[watch]` table) survives a UI
+    settings save."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):

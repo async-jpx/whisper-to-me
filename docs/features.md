@@ -54,26 +54,24 @@ same words would appear twice — once cleanly as `Others`, once garbled as
 `--keep-echoes` disables the text filter (for A/B comparison); `--no-aec`
 disables the acoustic canceller.
 
-## Automatic meeting detection (`wtm watch`)
+## Automatic meeting detection (daemon, always on)
 
-Notion-style: leave it running and it takes notes whenever a meeting starts.
-
-```sh
-uv run wtm watch
-```
+Notion-style: leave the daemon (`wtm serve`, or the desktop app) running and
+it offers to take notes whenever a meeting starts. There is no mode to switch
+on; see `docs/meeting-detection.md` for the full lifecycle.
 
 - **Detection**: CoreAudio reports when *any* app opens the default input
   device (covers Zoom, Teams, Meet, FaceTime…); Zoom additionally gets precise
   start/end detection via its in-meeting helper process.
-- **Title**: an explicit `--title` wins; otherwise the current Calendar.app
-  event or the Zoom window topic is used (both purely local, permission
-  gated); otherwise the summarizer infers a title from the conversation and
-  the note is renamed to match.
-- **End of meeting**: the Zoom helper exiting, or a configurable silence
-  timeout (`--silence-timeout`, default 120 s).
-- Each detected meeting gets its own note; the loop then waits for the
-  trigger to clear before watching again. macOS notifications announce
-  detection and the saved note.
+- **Prompt**: a detected meeting becomes a Record / Dismiss prompt for 60 s.
+  Unanswered counts as dismissed; a dismissed meeting is not offered again
+  until it ends.
+- **Title**: the current Calendar.app event or the Zoom window topic is used
+  (both purely local, permission gated); otherwise the summarizer infers a
+  title from the conversation and the note is renamed to match.
+- **End of meeting**: the Zoom helper exiting, the call app releasing the
+  microphone (macOS 14+), or a configurable silence timeout
+  (`--silence-timeout`, default 120 s). Stop also works.
 
 ## Summarization (`wtm summarize`, and automatic after recording)
 
@@ -123,8 +121,8 @@ transcript doesn't support is marked "*Not discussed in the transcript*",
 never padded with invented detail.
 
 The scratchpad persists to a sidecar file on every edit (crash-safe) and is
-cleared per meeting, so a second meeting in `watch` mode never inherits the
-first one's notes.
+cleared per meeting, so a second meeting never inherits the first one's
+notes.
 
 ## Ask your notes (`wtm ask`, UI 💬 chat)
 
@@ -148,8 +146,8 @@ uv run wtm ask "what did we decide about the exporter launch?"
 
 When a meeting starts with a *real* title (from you, the calendar, or Zoom —
 never the timestamp placeholder), the most recent related note is found via
-title search and its TL;DR is surfaced — on the console, in the UI, and as a
-macOS notification in watch mode. Purely local, best-effort: any failure is
+title search and its TL;DR is surfaced — on the console and in the UI.
+Purely local, best-effort: any failure is
 silent and never disturbs the recording.
 
 ## Speaker diarization (beta, opt-in)
@@ -229,12 +227,12 @@ date property if one exists, and an `Attendees` multi-select if one exists.
 
 `wtm serve` runs a FastAPI daemon on `127.0.0.1:8737` (localhost-only,
 hard-coded); `wtm ui` also opens the browser. The UI is fully vendored — no
-CDN. It drives everything: record/watch/stop, live transcript over WebSocket,
+CDN. It drives everything: record/stop, live transcript over WebSocket,
 scratchpad, template picker, notes browser/editor with search, chat, briefs,
 and the export actions. Deep links (`#note=<name>`) open a specific note.
 
 REST surface (all under `/api`): `status`, `record/start|stop`,
-`watch/start|stop`, `simulate`, `session/scratchpad`, `notes` (list / get /
+`prompts/{id}` (answer a detected-meeting prompt), `simulate`, `session/scratchpad`, `notes` (list / get /
 edit / toggle task), `search`, `chat`, `templates`, `export/config`,
 `notes/{name}/vault|followup|notion`, and the `/api/events` WebSocket.
 

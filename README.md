@@ -38,7 +38,6 @@ with key points, decisions, and action items, saved as a Notion page.
 ```sh
 uv run wtm devices                        # list input devices
 uv run wtm record --title "Team sync"     # live-transcribe; Ctrl-C to stop & summarize
-uv run wtm watch                          # Notion-style: auto-detects meetings & takes notes
 uv run wtm transcribe recording.wav       # transcribe + summarize an audio file
 uv run wtm summarize transcript.md        # (re)summarize existing text
 uv run wtm simulate --mic a.wav --system b.wav   # replay files through the pipeline (testing)
@@ -50,15 +49,10 @@ Useful flags: `--model small|medium|large-v3` (Whisper size), `--language en`,
 `--ollama-model NAME`, `--context "attendees, agenda hints"`, `--no-summary`,
 `--notes-dir PATH`, and `--device N` for `record`.
 
-Notes are titled automatically: an explicit `--title` wins; `watch` then tries
-the current Calendar.app event or the Zoom window topic (local, permission
-gated); otherwise a title is inferred from the conversation by the local
-summarizer, and the note file is renamed to match.
-
-Watch recordings end on their own when the meeting does: Zoom's in-call
-helper exits, the call app releases the microphone (macOS 14+), or nothing
-has been heard for `--silence-timeout` seconds (default 120). See
-`docs/meeting-detection.md` for how the detection works.
+Notes are titled automatically: an explicit `--title` wins; a detected
+meeting then tries the current Calendar.app event or the Zoom window topic
+(local, permission gated); otherwise a title is inferred from the conversation
+by the local summarizer, and the note file is renamed to match.
 
 First run downloads the Whisper model once; everything afterwards is offline.
 macOS will ask for microphone permission for your terminal on first recording.
@@ -90,19 +84,39 @@ headphones. Lines from both sources are merged by time.
 ## Web UI and desktop app
 
 `uv run wtm ui` starts a local daemon (FastAPI, loopback only) and opens the
-web UI: live transcript, searchable and editable notes, one-click record/watch.
+web UI: live transcript, searchable and editable notes, one-click record.
 
-The daemon watches for meetings from the moment it starts and — like Notion —
-**asks before recording**: a small popup (web UI card, desktop overlay widget,
-and tray menu entries) offers Record / Ignore whenever a meeting is detected.
-`wtm serve --no-watch` disables watching on boot, `--auto-record` records
-without asking; the same lives in `~/.config/whisper-to-me/config.toml`:
+Meeting detection is always on while the daemon runs, and — like Notion — it
+**asks before recording**. When a meeting is detected, the desktop app shows a
+small overlay (and tray entries) offering Record / Dismiss for 60 seconds. An
+unanswered prompt counts as dismissed, and a dismissed meeting is not offered
+again until it ends. A recording you accepted ends on its own when the meeting
+does: Zoom's in-call helper exits, the call app releases the microphone
+(macOS 14+), or nothing has been heard for `--silence-timeout` seconds
+(default 120). Stop ends it early. See `docs/meeting-detection.md` for how
+the detection works. `wtm serve` on its own has no prompt surface, so its
+prompts simply time out; "Start recording" always works.
 
-```toml
-[watch]
-auto_start = true   # watch for meetings from boot
-confirm = true      # ask (prompt) before recording
+For UI and shell authors, the daemon publishes one status frame. It is the
+reply to `GET /api/status` and the first `/api/events` WebSocket frame, and it
+is re-sent on every change:
+
+```jsonc
+{"type": "status",
+ "state": "idle" | "prompting" | "starting" | "recording" | "stopping" | "summarizing",
+ "origin": null | "manual" | "detected" | "simulate",   // set while a session runs
+ "title": null | "...", "started": null | "ISO time", "elapsed_s": null | 12.3,
+ "prompt": null | {"id": "8757d9dda76c", "title": "Weekly sync", "trigger": "zoom" | "mic",
+                   "expires_in_s": 57.8, "timeout_s": 60.0}}
 ```
+
+- `POST /api/prompts/{id}` with `{"answer": "record" | "dismiss"}` answers the
+  live prompt: 202, or 409 `prompt expired` when the id is not the live prompt
+  or its countdown ran out. Count down from `expires_in_s` for display only;
+  the daemon resolves the timeout itself.
+- `POST /api/record/start` also works while prompting and replaces the prompt.
+- `POST /api/record/stop` stops manual and detected recordings (not
+  simulations); detection keeps running.
 
 There is also a menu-bar desktop app (Tauri) wrapping the same daemon:
 

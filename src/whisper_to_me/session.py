@@ -1,5 +1,5 @@
 """Recording-session orchestration: capture sources, live transcription
-workers, and the summarize-and-save step shared by `record` and `watch`."""
+workers, and the summarize-and-save step shared by the CLI and the daemon."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class ConsoleSink:
     def __call__(self, event: dict) -> None:
         etype = event["type"]
         if etype == "status":
-            return  # cmd_record/cmd_watch already announce their own start
+            return  # cmd_record already announces its own start
         if etype == "line":
             console.print(
                 f"[dim][{event['stamp']}][/dim] [bold]{event['speaker']}:[/bold] {event['text']}"

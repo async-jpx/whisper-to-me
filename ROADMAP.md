@@ -10,7 +10,7 @@ out** (see "Export" below for the one deliberate, opt-in exception).
 Working: mic + system-audio capture (ScreenCaptureKit tap), AEC + text echo
 dedup, live faster-whisper transcription, windowed Ollama summarization with
 structured fact extraction, auto titles, crash-safe journaling, meeting
-auto-detect (`watch`), a local FastAPI daemon (`wtm serve` / `wtm ui`) with a
+auto-detect (always on in the daemon, prompt before recording), a local FastAPI daemon (`wtm serve` / `wtm ui`) with a
 WebSocket event stream, and a static web UI (sidebar, live transcript,
 minimal markdown note view).
 
@@ -88,7 +88,8 @@ the CLI keeps working unchanged.
 3. ✅ Native notifications: "Meeting detected — recording", "Note saved:
    *Title*", daemon errors. (Banner visibility for the unbundled dev binary
    depends on macOS notification permission; re-check once bundled/signed.)
-4. Login item (launch at startup, start in `watch` mode), dock-less mode.
+4. Login item (launch at startup; meeting detection is always on, so there is
+   no mode to start in), dock-less mode.
 5. Packaging: signed + notarized `.app`, DMG. TCC permissions (mic, system
    audio) get prompted for the *app bundle* — document the migration; this
    kills the "restart your terminal" wart, which is itself a UX win.
@@ -134,19 +135,18 @@ the CLI keeps working unchanged.
 2. ✅ **Notes-first enhancement (Granola's core trick)** — a live scratchpad in
    the session view; your typed bullets bias fact extraction and open the
    summary with a "Your Notes, Expanded" section (each point expanded from the
-   transcript, or marked "not discussed"). Crash-safe sidecar; per-meeting
-   reset in watch mode.
+   transcript, or marked "not discussed"). Crash-safe sidecar; reset per
+   meeting.
 3. ✅ **Chat with your meetings** — local RAG: FTS5 (OR-match) retrieval →
    summary + term-matching transcript lines as numbered sources → one Ollama
    call with `[n]` citations linking back to the note. `wtm ask` + a 💬 chat
    view. (Embeddings retrieval left as a future upgrade; FTS is enough today.)
 4. ✅ **Meeting templates** — per-type section blocks (default, 1-on-1,
    standup, sales-call, interview, brainstorm) as editable markdown,
-   auto-suggested from the meeting title in watch mode, user-overridable in
+   auto-suggested from a detected meeting's title, user-overridable in
    `~/.config/whisper-to-me/templates/`. `wtm templates` + a UI picker.
 5. ✅ **Briefs** — when a meeting starts with a known title, surface the most
-   recent related note's TL;DR ("Last time…") as an event + UI card +
-   notification. (Also fires on `simulate` so it's testable mic-free.)
+   recent related note's TL;DR ("Last time…") as an event + UI card. (Also fires on `simulate` so it's testable mic-free.)
 6. ✅ **Follow-up drafts** — "Draft follow-up email" in the Export menu +
    `wtm draft` (local LLM over the summary, transcript dropped); output to a
    copy-me modal / stdout — never sent anywhere.
@@ -176,7 +176,7 @@ the CLI keeps working unchanged.
 | Milestone | Contents | Why first |
 |---|---|---|
 | **M1: Usable notes** | Phase 1.1–1.3 (rich markdown, editing, search) + Phase 5.1 tests for what we touch | Daily value now; everything transfers into Tauri untouched |
-| **M2: It's an app** | Phase 2.1–2.4 (Tauri, tray, notifications, login item) + Phase 1.5 settings | The "leave it running" moment — watch mode + tray = Granola workflow |
+| **M2: It's an app** | Phase 2.1–2.4 (Tauri, tray, notifications, login item) + Phase 1.5 settings | The "leave it running" moment — always-on detection + tray = Granola workflow |
 | **M3: It fits your system** | Phase 3 (Obsidian native, Notion opt-in, clipboard) + Phase 1.4 action items | Notes become part of the user's real workflow |
 | **M4: It's smart** | Phase 4 in order: notes-first enhancement → templates → chat → diarization → briefs | Differentiators, each independently shippable |
 | **M5: It's fast & solid** | Phase 5.2–5.4 + packaging polish (5.2 can start anytime) | Perf and robustness compound over time |
