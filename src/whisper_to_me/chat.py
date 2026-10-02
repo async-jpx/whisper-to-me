@@ -102,15 +102,12 @@ def _history_text(history: list[dict] | None) -> str:
     return "Earlier in this conversation:\n" + "\n".join(turns) + "\n\n"
 
 
-def answer_question(
-    notes_dir: Path,
-    question: str,
-    model: str = summ.DEFAULT_MODEL,
-    history: list[dict] | None = None,
-) -> dict:
-    """Answer `question` from the notes. Returns {"answer", "sources"} where
-    sources are only the notes actually cited in the answer. No hits → a canned
-    reply with no Ollama call. OllamaError propagates to the caller."""
+def prepare(
+    notes_dir: Path, question: str, history: list[dict] | None = None
+) -> tuple[str, list[dict]] | None:
+    """Retrieval half of a chat turn: returns (user_prompt, used_sources), or
+    None when nothing in the notes matches (callers answer NO_MATCH with no
+    Ollama call)."""
     terms = _terms(question)
     # OR-match the salient words: a natural-language question must not require
     # every word ("when", "does", "who") to appear in a note (that ANDs to
@@ -119,7 +116,7 @@ def answer_question(
         notes_dir, " ".join(terms) or question, limit=MAX_SOURCES, match_all=False
     )
     if not hits:
-        return {"answer": NO_MATCH, "sources": []}
+        return None
 
     blocks: list[str] = []
     used: list[dict] = []
@@ -135,7 +132,7 @@ def answer_question(
         used.append({"n": n, "name": hit["name"], "title": hit["title"]})
         total += len(block)
     if not blocks:  # every hit unreadable — don't ask Ollama about nothing
-        return {"answer": NO_MATCH, "sources": []}
+        return None
 
     user = (
         _history_text(history)
@@ -143,7 +140,27 @@ def answer_question(
         + "\n\n".join(blocks)
         + f"\n\nQuestion: {question}"
     )
-    answer = summ._chat(model, CHAT_SYSTEM, user)
+    return user, used
+
+
+def cited_sources(answer: str, used: list[dict]) -> list[dict]:
+    """Only the sources the answer actually cites as [n]."""
     cited = {int(m) for m in re.findall(r"\[(\d+)\]", answer)}
-    sources = [s for s in used if s["n"] in cited]
-    return {"answer": answer, "sources": sources}
+    return [s for s in used if s["n"] in cited]
+
+
+def answer_question(
+    notes_dir: Path,
+    question: str,
+    model: str = summ.DEFAULT_MODEL,
+    history: list[dict] | None = None,
+) -> dict:
+    """Answer `question` from the notes. Returns {"answer", "sources"} where
+    sources are only the notes actually cited in the answer. No hits → a canned
+    reply with no Ollama call. OllamaError propagates to the caller."""
+    prep = prepare(notes_dir, question, history)
+    if prep is None:
+        return {"answer": NO_MATCH, "sources": []}
+    user, used = prep
+    answer = summ._chat(model, CHAT_SYSTEM, user)
+    return {"answer": answer, "sources": cited_sources(answer, used)}

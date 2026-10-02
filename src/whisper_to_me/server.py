@@ -16,6 +16,7 @@ of ever blocking the pipeline.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 import webbrowser
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -512,6 +513,33 @@ class ChatBody(BaseModel):
     history: list[dict] = []
 
 
+class ChatStreamBody(BaseModel):
+    # AI SDK UIMessage list: {role, parts: [{type: "text", text}, ...]}.
+    # Extra fields (id, trigger, messageId) are ignored by pydantic.
+    messages: list[dict] = []
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _ui_message_turns(messages: list[dict]) -> list[dict]:
+    """AI SDK UIMessages → [{role, content}] turns (text parts joined)."""
+    turns = []
+    for msg in messages:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = "\n".join(
+            str(p.get("text", ""))
+            for p in msg.get("parts", [])
+            if isinstance(p, dict) and p.get("type") == "text"
+        ).strip()
+        if text:
+            turns.append({"role": role, "content": text})
+    return turns
+
+
 class ObsidianSettingsBody(BaseModel):
     vault: str
 
@@ -787,6 +815,52 @@ def create_app(opts: ServerOptions) -> FastAPI:
             )
         except summ.OllamaError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/chat/stream")
+    def chat_stream_endpoint(body: ChatStreamBody):
+        # Streaming twin of /api/chat, speaking the AI SDK UI message stream
+        # protocol (SSE) for the web UI's useChat. Same local-only pipeline:
+        # FTS retrieval here, token stream from the localhost Ollama.
+        turns = _ui_message_turns(body.messages)
+        if not turns or turns[-1]["role"] != "user":
+            raise HTTPException(status_code=400, detail="no user question")
+        question = turns[-1]["content"]
+        history = turns[:-1]
+
+        def gen():
+            yield _sse({"type": "start"})
+            yield _sse({"type": "text-start", "id": "answer"})
+            prep = chat.prepare(opts.notes_dir, question, history=history)
+            if prep is None:
+                yield _sse({"type": "text-delta", "id": "answer", "delta": chat.NO_MATCH})
+                sources: list[dict] = []
+            else:
+                user_prompt, used = prep
+                pieces: list[str] = []
+                try:
+                    for piece in summ._chat_stream(
+                        opts.ollama_model, chat.CHAT_SYSTEM, user_prompt
+                    ):
+                        pieces.append(piece)
+                        yield _sse({"type": "text-delta", "id": "answer", "delta": piece})
+                except summ.OllamaError as exc:
+                    yield _sse({"type": "error", "errorText": str(exc)})
+                    yield "data: [DONE]\n\n"
+                    return
+                sources = chat.cited_sources("".join(pieces), used)
+            yield _sse({"type": "text-end", "id": "answer"})
+            yield _sse({"type": "data-sources", "data": sources})
+            yield _sse({"type": "finish"})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "x-vercel-ai-ui-message-stream": "v1",
+            },
+        )
 
     # -- exports (Phase 3). Config is re-read per request so pasting a vault
     # path or Notion token into config.toml needs no daemon restart.

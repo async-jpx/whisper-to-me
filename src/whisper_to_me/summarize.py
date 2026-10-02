@@ -183,6 +183,52 @@ def _chat(
     return resp.json()["message"]["content"].strip()
 
 
+def _chat_stream(model: str, system: str, user: str, timeout: int = 600):
+    """Streaming variant of _chat: yields content pieces as Ollama produces
+    them. Same OllamaError mapping; same num_ctx cap. Localhost only."""
+    payload = {
+        "model": model,
+        "stream": True,
+        "options": {"num_ctx": NUM_CTX},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout, stream=True
+        )
+        resp.raise_for_status()
+    except requests.ConnectionError as exc:
+        raise OllamaError(
+            "Cannot reach Ollama at localhost:11434 — is `ollama serve` running?"
+        ) from exc
+    except requests.Timeout as exc:
+        raise OllamaError(
+            f"Ollama took longer than {timeout}s — the model '{model}' may be "
+            "too large for this machine; try a smaller one (e.g. llama3.2:3b)."
+        ) from exc
+    except requests.HTTPError as exc:
+        raise OllamaError(f"Ollama error: {exc.response.text[:300]}") from exc
+    try:
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            data = json.loads(line)
+            if data.get("error"):
+                raise OllamaError(f"Ollama error: {str(data['error'])[:300]}")
+            piece = data.get("message", {}).get("content", "")
+            if piece:
+                yield piece
+            if data.get("done"):
+                break
+    except requests.RequestException as exc:
+        raise OllamaError(f"Ollama stream dropped: {exc}") from exc
+    finally:
+        resp.close()
+
+
 def _chat_json(model: str, system: str, user: str, schema: dict) -> dict:
     last_error = None
     for _ in range(2):

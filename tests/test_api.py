@@ -399,6 +399,105 @@ def test_chat_ollama_down_503(client, monkeypatch):
     assert client.post("/api/chat", json={"question": "x"}).status_code == 503
 
 
+def _ui_message(role, text):
+    return {"role": role, "parts": [{"type": "text", "text": text}]}
+
+
+def _sse_events(resp):
+    import json as _json
+
+    events = []
+    for line in resp.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[len("data: ") :]
+        events.append("[DONE]" if payload == "[DONE]" else _json.loads(payload))
+    return events
+
+
+def test_chat_stream_no_user_message_400(client):
+    assert client.post("/api/chat/stream", json={"messages": []}).status_code == 400
+    assert (
+        client.post(
+            "/api/chat/stream", json={"messages": [_ui_message("assistant", "hi")]}
+        ).status_code
+        == 400
+    )
+
+
+def test_chat_stream_happy_path(client, monkeypatch):
+    import whisper_to_me.server as server
+
+    seen = {}
+
+    def prepare(nd, q, history=None):
+        seen["question"] = q
+        seen["history"] = history
+        return "PROMPT", [
+            {"n": 1, "name": "note.md", "title": "Sprint Planning"},
+            {"n": 2, "name": "other.md", "title": "Standup"},
+        ]
+
+    monkeypatch.setattr(server.chat, "prepare", prepare)
+    monkeypatch.setattr(
+        server.summ, "_chat_stream", lambda model, system, user: iter(["yes ", "[1]"])
+    )
+    resp = client.post(
+        "/api/chat/stream",
+        json={
+            "messages": [
+                _ui_message("user", "earlier question"),
+                _ui_message("assistant", "earlier answer"),
+                _ui_message("user", "what shipped?"),
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["x-vercel-ai-ui-message-stream"] == "v1"
+    assert seen["question"] == "what shipped?"
+    assert seen["history"] == [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+    ]
+    events = _sse_events(resp)
+    deltas = [e["delta"] for e in events if e != "[DONE]" and e["type"] == "text-delta"]
+    assert "".join(deltas) == "yes [1]"
+    sources = next(e for e in events if e != "[DONE]" and e["type"] == "data-sources")
+    assert sources["data"] == [{"n": 1, "name": "note.md", "title": "Sprint Planning"}]
+    assert events[-1] == "[DONE]"
+    assert {"type": "finish"} in events
+
+
+def test_chat_stream_no_match(client, monkeypatch):
+    import whisper_to_me.server as server
+
+    monkeypatch.setattr(server.chat, "prepare", lambda nd, q, history=None: None)
+    events = _sse_events(client.post(
+        "/api/chat/stream", json={"messages": [_ui_message("user", "anything")]}
+    ))
+    deltas = [e["delta"] for e in events if e != "[DONE]" and e["type"] == "text-delta"]
+    assert "".join(deltas) == server.chat.NO_MATCH
+
+
+def test_chat_stream_ollama_down_emits_error_part(client, monkeypatch):
+    import whisper_to_me.server as server
+
+    def boom(model, system, user):
+        raise server.summ.OllamaError("Cannot reach Ollama")
+        yield  # pragma: no cover — make this a generator
+
+    monkeypatch.setattr(
+        server.chat, "prepare", lambda nd, q, history=None: ("PROMPT", [])
+    )
+    monkeypatch.setattr(server.summ, "_chat_stream", boom)
+    events = _sse_events(client.post(
+        "/api/chat/stream", json={"messages": [_ui_message("user", "x")]}
+    ))
+    err = next(e for e in events if e != "[DONE]" and e["type"] == "error")
+    assert "Ollama" in err["errorText"]
+    assert events[-1] == "[DONE]"
+
+
 def _drain(client_obj):
     import queue as _q
 
