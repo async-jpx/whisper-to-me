@@ -253,9 +253,23 @@ def record_session(
         w.start()
 
     recorders = [rec for _, rec in sources]
+    # A system tap that died on startup leaves the meeting transcribed
+    # one-sided; say so instead of letting "Others" be silently empty.
+    tap = next(
+        (rec for _, rec in sources if isinstance(rec, audio.SystemAudioTap)), None
+    )
+    tap_reported = False
     try:
         while any(w.is_alive() for w in workers):
             workers[0].join(timeout=0.5)
+            if tap is not None and not tap_reported and tap.failure is not None:
+                tap_reported = True
+                message = (
+                    "System audio unavailable — only your microphone is being "
+                    f"transcribed. {tap.failure}"
+                )
+                console.print(f"[red]{message}[/red]")
+                sink({"type": "error", "message": message})
             if should_stop is not None and should_stop(recorders):
                 break
             if stop_event is not None and stop_event.is_set():

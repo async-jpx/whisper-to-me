@@ -217,18 +217,61 @@ class SystemAudioTap(Recorder):
         self._binary = binary
         self._proc: subprocess.Popen | None = None
         self._pump: threading.Thread | None = None
+        self._stderr_pump: threading.Thread | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=10)
+        # Set when the helper dies on its own (permission denied, no display).
+        # Without this the Others source just goes quiet and the meeting is
+        # transcribed one-sided with no error anywhere.
+        self.failure: str | None = None
 
     def start(self) -> None:
         self._proc = subprocess.Popen(
             [str(self._binary)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        self._stderr_pump = threading.Thread(target=self._stderr_loop, daemon=True)
+        self._stderr_pump.start()
         self._pump = threading.Thread(target=self._pump_loop, daemon=True)
         self._pump.start()
         self._chunker = threading.Thread(target=self._chunk_loop, daemon=True)
         self._chunker.start()
+
+    def _stderr_loop(self) -> None:
+        # Must be drained for the whole session: a full stderr pipe would
+        # block the helper mid-capture. Only the tail is kept.
+        for raw in iter(self._proc.stderr.readline, b""):
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                self._stderr_tail.append(line)
+
+    def _note_failure(self) -> None:
+        """Explain a helper that stopped by itself. A normal stop() is not a
+        failure: terminate() leaves a negative returncode, and exit-on-stdin-
+        EOF leaves 0 — only a positive code means it refused to run."""
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            code = proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return
+        if code <= 0:
+            return
+        if self._stderr_pump is not None:
+            self._stderr_pump.join(timeout=1)
+        if code == 2:
+            self.failure = (
+                "macOS denied Screen & System Audio Recording permission. Enable "
+                "the app that launched whisper-to-me under System Settings → "
+                "Privacy & Security → Screen & System Audio Recording, then "
+                "restart that app."
+            )
+        else:
+            self.failure = " ".join(self._stderr_tail) or (
+                f"system-audio helper exited with code {code}"
+            )
 
     def _pump_loop(self) -> None:
         bytes_per_block = BLOCK_FRAMES * 4  # float32
@@ -236,6 +279,7 @@ class SystemAudioTap(Recorder):
         while True:
             data = stdout.read(bytes_per_block)
             if not data or len(data) < bytes_per_block:
+                self._note_failure()
                 self._blocks.put(None)
                 return
             self._blocks.put(np.frombuffer(data, dtype=np.float32))
@@ -252,6 +296,8 @@ class SystemAudioTap(Recorder):
                     self._proc.kill()
             if self._pump is not None:
                 self._pump.join(timeout=3)
+            if self._stderr_pump is not None:
+                self._stderr_pump.join(timeout=3)
             if self._chunker is not None:
                 self._chunker.join(timeout=5)
         finally:
