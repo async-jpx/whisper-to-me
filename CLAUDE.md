@@ -143,15 +143,22 @@ search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
                has match_all (AND, sidebar default) vs OR (chat/briefs) mode
 webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
                Vite + Zustand, all deps bundled locally (no CDN, no runtime
-               network). src/legacy.css is the original stylesheet verbatim —
+               network). src/legacy.css is the original stylesheet (minus
+               rules for deleted UI) —
                components reuse its class names for pixel parity; Tailwind
                utilities (no preflight — it would fight legacy.css) layer on
                top via @theme tokens. store.ts + ws.ts are the WS-authoritative
                status model (backoff reconnect, resync-on-focus, recordPending
-               5s failsafe); components cover #note= deep links, live
+               5s failsafe); api/types.ts `Status` is a union mirroring
+               status_wire (idle | prompting+prompt | session phase+origin);
+               only Active phases switch to the live view or show "Live
+               session". The web UI never answers prompts — the status line
+               just says "Meeting detected — …" and New meeting stays enabled
+               (it supersedes the prompt); the overlay and tray answer.
+               Components cover #note= deep links, live
                scratchpad, template picker, chat view, briefs, Settings →
-               Connections, export menu (incl. the confirmed Notion push),
-               and the floating meeting prompt. Editors are CodeMirror 6
+               Connections, export menu (incl. the confirmed Notion push).
+               Editors are CodeMirror 6
                (MarkdownEditor.tsx + lib/cm.ts commands); the chat view runs
                on @ai-sdk/react useChat (module-level Chat instance keeps the
                conversation across view switches) against /api/chat/stream
@@ -159,7 +166,10 @@ static/        dist/ — the committed Vite build, served at / (Cache-Control:
                no-cache; assets are content-hashed) and /static/dist/*; and
                prompt.html — a standalone hand-written widget page for the
                desktop overlay, hard-coded as /static/prompt.html in
-               desktop prompt.rs — keep it a plain static file
+               desktop prompt.rs — keep it a plain static file. It answers
+               POST /api/prompts/{id}, counts down from expires_in_s (display
+               only — never posts a dismiss at 0) and re-fetches /api/status
+               on any non-2xx so its buttons follow the latest frame
 cli.py         thin argparse wiring only — keep logic out of here
 desktop/       Tauri menu-bar shell: spawns .venv/bin/wtm serve as a sidecar
                (or attaches to a running daemon and never kills it), webview →

@@ -1,6 +1,5 @@
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MainPane } from "./MainPane";
-import { MeetingPrompt } from "./MeetingPrompt";
 import { Sidebar } from "./Sidebar";
 
 export function Layout() {
@@ -8,7 +7,6 @@ export function Layout() {
     <div className="app">
       <Sidebar />
       <MainPane />
-      <MeetingPrompt />
       <ConfirmDialog />
     </div>
   );

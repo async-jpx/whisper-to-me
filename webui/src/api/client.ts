@@ -60,10 +60,6 @@ export const api = {
   recordStart: (title: string | null, template: string | null) =>
     sendJson<void>("POST", "/api/record/start", { title, template }),
   recordStop: () => sendJson<void>("POST", "/api/record/stop", {}),
-  watchStart: () => sendJson<void>("POST", "/api/watch/start", {}),
-  watchStop: () => sendJson<void>("POST", "/api/watch/stop", {}),
-  watchRespond: (accept: boolean) =>
-    sendJson<void>("POST", "/api/watch/respond", { accept }),
   getScratchpad: () => getJson<{ content: string }>("/api/session/scratchpad"),
   putScratchpad: (content: string) =>
     sendJson<void>("PUT", "/api/session/scratchpad", { content }),

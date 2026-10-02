@@ -3,6 +3,7 @@
 
 import { lazy, Suspense } from "react";
 import { useStore } from "../store";
+import { canStartRecording } from "../api/types";
 import { LivePane } from "./LivePane";
 import { NoteContainer } from "./NoteContainer";
 import { SessionBar } from "./SessionBar";
@@ -23,7 +24,7 @@ function EmptyState() {
       <button
         id="empty-record-btn"
         className="btn btn-primary btn-lg"
-        disabled={status.state !== "idle" && status.state !== "watching"}
+        disabled={!canStartRecording(status)}
         onClick={() => document.getElementById("record-btn")?.click()}
       >
         <span className="rec-glyph" aria-hidden="true"></span>

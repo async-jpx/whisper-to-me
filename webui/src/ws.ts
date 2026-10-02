@@ -20,12 +20,7 @@ function handleEvent(evt: DaemonEvent): void {
   const s = useStore.getState();
   switch (evt.type) {
     case "status":
-      s.applyStatus({
-        state: evt.state,
-        title: evt.title,
-        started: evt.started,
-        elapsed_s: s.status.elapsed_s,
-      });
+      s.applyStatus(evt);
       break;
     case "line":
       s.appendLine({
@@ -103,7 +98,7 @@ function connectEvents(): void {
 }
 
 /* Re-fetch the daemon's status and apply it — the self-heal path for missed
-   WS events (sleeping laptop, failed request). Exported for the record/watch
+   WS events (sleeping laptop, failed request). Exported for the record
    error paths and the recordPending failsafe. */
 export async function resyncStatus(): Promise<void> {
   try {

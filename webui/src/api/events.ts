@@ -2,14 +2,10 @@
    server replays a status frame plus any buffered transcript lines; "brief"
    is live-only (never buffered). */
 
-import type { SessionState } from "./types";
+import type { Status } from "./types";
 
-export interface StatusEvent {
-  type: "status";
-  state: SessionState;
-  title: string | null;
-  started: string | null;
-}
+/* The full status frame — the same object GET /api/status returns. */
+export type StatusEvent = { type: "status" } & Status;
 
 export interface LineEvent {
   type: "line";

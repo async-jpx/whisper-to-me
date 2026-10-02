@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { api } from "../api/client";
+import { isActive } from "../api/types";
 import type { NoteMeta, SearchHit } from "../api/types";
 import { Icon } from "./Icons";
 import { SettingsModal } from "./SettingsModal";
@@ -217,8 +218,8 @@ export function Sidebar() {
 
     const entries: (NoteMeta | null)[] = [];
 
-    // Add live session pseudo-entry if not idle
-    if (status.state !== "idle") {
+    // Live session pseudo-entry while a session runs (a prompt is not one)
+    if (isActive(status)) {
       entries.push(null); // placeholder for live item
     }
 
@@ -229,7 +230,7 @@ export function Sidebar() {
 
     // Render empty state if needed
     if (notesList.length === 0) {
-      if (searching || status.state === "idle") {
+      if (searching || !isActive(status)) {
         return <div className="notes-empty">{searching ? "No matches." : "No notes yet."}</div>;
       }
       return null;

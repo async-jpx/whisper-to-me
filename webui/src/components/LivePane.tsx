@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import { useStore } from "../store";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
+import { isActive } from "../api/types";
 import { EditorToolbar } from "./EditorToolbar";
 import { MarkdownEditor, type ReactCodeMirrorRef } from "./MarkdownEditor";
 import { Icon } from "./Icons";
@@ -53,11 +54,13 @@ export function LivePane() {
       // Read through the store at fire time: the closure's `scratchpad` is
       // one keystroke stale (state hadn't re-rendered when this scheduled).
       const { status: liveStatus, scratchpad: content } = useStore.getState();
-      if (liveStatus.state === "idle") return; // no session to attach notes to
+      if (!isActive(liveStatus)) return; // no session to attach notes to
       try {
         await api.putScratchpad(content);
         scratchpadErrorShownRef.current = false;
-      } catch {
+      } catch (err) {
+        // 409: the session ended between the check and the PUT.
+        if (err instanceof ApiError && err.status === 409) return;
         if (!scratchpadErrorShownRef.current) {
           toast("Couldn't save your notes to the session.", "error");
           scratchpadErrorShownRef.current = true;

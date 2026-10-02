@@ -6,6 +6,7 @@
 
 import { create } from "zustand";
 import { api } from "./api/client";
+import { IDLE_STATUS, isActive } from "./api/types";
 import type { NoteMeta, SearchHit, Status, Template } from "./api/types";
 
 export type View = "empty" | "transcript" | "note" | "chat";
@@ -41,8 +42,6 @@ interface ConfirmRequest {
   danger: boolean;
   resolve: (ok: boolean) => void;
 }
-
-const SESSION_STATES = ["starting", "recording", "watching"];
 
 let toastSeq = 0;
 
@@ -116,7 +115,7 @@ export interface AppState {
 
 export const useStore = create<AppState>()((set, get) => ({
   daemonUp: false,
-  status: { state: "idle", title: null, started: null, elapsed_s: null },
+  status: IDLE_STATUS,
   recordPending: false,
   transcript: [],
   brief: null,
@@ -155,17 +154,18 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   applyStatus(status) {
-    const prev = get().status.state;
+    const prev = get().status;
     // A fresh session starts with an empty scratchpad; a mid-session reconnect
     // repopulates it from the daemon (syncScratchpad) instead of wiping it.
-    const fresh = prev === "idle" && SESSION_STATES.includes(status.state);
+    const fresh = !isActive(prev) && isActive(status);
     set((s) => ({
       status,
       recordPending: false, // the daemon answered; buttons follow real state
       scratchpad: fresh ? "" : s.scratchpad,
     }));
     const { view, currentNote } = get();
-    if (view === "empty" && status.state !== "idle" && currentNote === null) {
+    // A prompt is not a session: it must not pull the user out of EmptyState.
+    if (view === "empty" && isActive(status) && currentNote === null) {
       set({ view: "transcript" });
     }
   },
@@ -192,7 +192,7 @@ export const useStore = create<AppState>()((set, get) => ({
     set({ scratchpad: content });
   },
   async syncScratchpad() {
-    if (get().status.state === "idle") return;
+    if (!isActive(get().status)) return;
     try {
       const data = await api.getScratchpad();
       set({ scratchpad: data.content || "" });
