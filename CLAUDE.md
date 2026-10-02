@@ -89,7 +89,10 @@ templates.py   meeting templates (default/one-on-one/standup/interview/
                title; every template must keep a "## Action Items" + "- [ ]"
 chat.py        local RAG (Phase 4.3): FTS5 retrieve (OR-match) → summary +
                term-matching transcript lines as numbered sources → one _chat
-               call with [n] citations; sources filtered to those actually cited
+               call with [n] citations; sources filtered to those actually
+               cited. prepare()/cited_sources() split retrieval from the model
+               call so the daemon can stream tokens (summarize._chat_stream)
+               in between
 briefs.py      "Last time…" briefs: FTS find the most recent related note by
                title, extract its TL;DR; emitted as a "brief" event (never
                buffered in the replay), best-effort/never raises
@@ -128,7 +131,10 @@ server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
                manual record/simulate preempt an idle (watching/prompting —
                never recording) watch and re-arm it when the session ends;
                /api/settings connects Obsidian/Notion by writing config.toml
-               (save_config) — no network, the token never leaves via the wire
+               (save_config) — no network, the token never leaves via the wire;
+               POST /api/chat/stream streams chat answers as SSE in the AI SDK
+               UI-message-stream protocol (text-delta events + a data-sources
+               part), still 127.0.0.1→local Ollama only
 search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
                has match_all (AND, sidebar default) vs OR (chat/briefs) mode
 webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
@@ -141,7 +147,10 @@ webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
                5s failsafe); components cover #note= deep links, live
                scratchpad, template picker, chat view, briefs, Settings →
                Connections, export menu (incl. the confirmed Notion push),
-               and the floating meeting prompt
+               and the floating meeting prompt. Editors are CodeMirror 6
+               (MarkdownEditor.tsx + lib/cm.ts commands); the chat view runs
+               on @ai-sdk/react useChat (module-level Chat instance keeps the
+               conversation across view switches) against /api/chat/stream
 static/        dist/ — the committed Vite build, served at / (Cache-Control:
                no-cache; assets are content-hashed) and /static/dist/*; and
                prompt.html — a standalone hand-written widget page for the
@@ -238,11 +247,14 @@ Key invariants:
   refetches the markdown, and re-rendering there collapses the transcript
   fold and resets scroll. Re-renders happen only on note open
   (`currentNote`) and save (`noteRenderSeq`).
-- **The webui textarea editor must stay uncontrolled** (NoteContainer edit
-  branch, lib/editing.ts): mutations go through `document.execCommand` —
-  deprecated but the only undo-stack-preserving path; a controlled `value`
-  prop fights it and kills Cmd-Z. The `<MarkdownEditor>` seam is where a
-  real editor (CodeMirror) can swap in later.
+- **The webui editor keymap needs `Prec.high`** (lib/cm.ts): the editors are
+  CodeMirror 6 (`<MarkdownEditor>`, note editor + scratchpad — CM's native
+  history replaced the old execCommand hack). @uiw/react-codemirror registers
+  basicSetup's keymaps *before* user extensions, so without `Prec.high` the
+  default Enter binding wins and list/task continuation silently stops
+  working. lib/cm.ts must keep the old textarea semantics: Enter continues
+  "- [ ] " items, Enter on an empty item ends the list, Tab indents by two
+  spaces.
 - **Scratchpad sidecar stays out of the notes glob** (`.wtm-scratchpad.txt`,
   server.py): it's crash-safety for the live scratchpad, but it must never be
   a note — it works only because `*.md` globs and `_safe_note_path` exclude it.
