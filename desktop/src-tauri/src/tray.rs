@@ -104,8 +104,7 @@ fn on_menu(app: &AppHandle, id: &str) {
     }
 }
 
-/// The click has already flipped the checkmark; write that state, then
-/// re-read the plist so the checkmark never claims a write that failed.
+/// The click has already flipped the checkmark.
 fn toggle_login(app: &AppHandle) {
     let Some(handles) = app.try_state::<TrayHandles>() else {
         return;
@@ -207,8 +206,6 @@ fn tray_title(status: &daemon::Status) -> String {
     }
 }
 
-/// Keeps the menu-bar elapsed time and the prompt countdown ticking
-/// between status events.
 pub fn title_ticker(app: AppHandle) {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));

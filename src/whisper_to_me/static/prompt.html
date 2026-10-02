@@ -97,8 +97,6 @@
     recordBtn.disabled = dismissBtn.disabled = !on;
   }
 
-  // Buttons follow the latest status frame, never a past click: a 409 used
-  // to leave them disabled for good.
   function apply(status) {
     const p = status && status.prompt;
     if (!p) {
@@ -118,8 +116,6 @@
     tick();
   }
 
-  // Display only. At 0 the page just waits: the daemon's deadline resolves
-  // the prompt and the next frame hides the window.
   function tick() {
     if (promptId === null) return;
     const left = Math.max(0, (deadlineMs - performance.now()) / 1000);
@@ -144,7 +140,7 @@
         body: JSON.stringify({ answer }),
       });
       ok = resp.ok;
-    } catch (err) { /* daemon unreachable: resync below */ }
+    } catch (err) {}
     if (!ok) {
       promptId = null;
       await resync();

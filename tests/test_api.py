@@ -26,9 +26,6 @@ NOTE = """\
 
 
 class ScriptedProbe:
-    """Stands in for live meeting detection: no pgrep, no CoreAudio, no
-    osascript. Tests flip `trigger` to start and end a "meeting"."""
-
     def __init__(self, trigger=None, hint=None):
         self.trigger = trigger
         self.hint = hint
@@ -41,7 +38,6 @@ class ScriptedProbe:
 
 
 def _make_live(manager, title, started):
-    """Put the daemon in a recording session without any session thread."""
     plan = runner.manual_plan(title, None, started)
     manager._state = runner.Active(plan, "recording", started, threading.Event())
 
@@ -639,9 +635,6 @@ def test_stop_record_while_idle_409(client):
     assert client.post("/api/record/stop").status_code == 409
 
 
-# ---------- meeting detection + prompts (ScriptedProbe: no OS detection) ----
-
-
 def _wait_until(predicate, timeout: float = 5.0) -> None:
     import time
 
@@ -655,8 +648,6 @@ def _wait_until(predicate, timeout: float = 5.0) -> None:
 
 @pytest.fixture()
 def detecting(tmp_path, monkeypatch):
-    """A daemon whose detector polls a ScriptedProbe every 10 ms with a short
-    prompt timeout. Whisper loads are counted, never performed."""
     import whisper_to_me.server as server
 
     loads = []
@@ -717,7 +708,7 @@ def test_detected_meeting_prompts_with_a_countdown(detecting):
     assert len(prompt["id"]) == 12
     status = _status(tc)
     assert (status["origin"], status["title"], status["started"]) == (None, None, None)
-    _wait_until(lambda: tc.loads)  # Whisper preloads while the prompt is up
+    _wait_until(lambda: tc.loads)
 
     ws = tc.manager.add_client()
     frame = ws.queue.get_nowait()
@@ -758,21 +749,18 @@ def test_record_answer_starts_detected_session_and_stop_works(detecting, monkeyp
         "detected", "Weekly standup", None,
     )
     assert calls["title"] == "Weekly standup"
-    assert callable(calls["should_stop"])  # meeting-end auto-stop is armed
+    assert callable(calls["should_stop"])
 
-    # A detected recording stops like a manual one (it used to 409).
     assert tc.post("/api/record/stop").status_code == 202
     assert _status(tc)["state"] == "stopping"
     release.set()
     _wait_until(lambda: _status(tc)["state"] == "idle")
     assert saved[0]["template"] == "standup" and saved[0]["auto_title"] is False
 
-    # Detection survived the stop: no re-prompt for the same meeting…
     import time
 
     time.sleep(0.2)
     assert _status(tc)["state"] == "idle"
-    # …but the next meeting prompts again, under a new id.
     tc.probe.trigger = None
     time.sleep(0.1)
     tc.probe.trigger = "mic"
@@ -788,7 +776,7 @@ def test_unanswered_prompt_times_out_and_sits_out(detecting):
     _wait_until(lambda: _status(tc)["state"] == "idle", timeout=2.0)
     resp = tc.post(f"/api/prompts/{prompt['id']}", json={"answer": "record"})
     assert resp.status_code == 409 and resp.json()["detail"] == "prompt expired"
-    time.sleep(0.5)  # longer than another timeout: still no re-prompt
+    time.sleep(0.5)
     assert _status(tc)["state"] == "idle"
 
 
@@ -797,7 +785,7 @@ def test_timeout_lands_on_the_deadline_not_the_next_poll(detecting):
 
     tc = detecting(prompt_timeout=0.3, poll=30.0)
     tc.probe.trigger = "zoom"
-    tc.manager._wake.set()  # poll now rather than in 30 s
+    tc.manager._wake.set()
     _prompt(tc)
     began = time.monotonic()
     _wait_until(lambda: _status(tc)["state"] == "idle", timeout=3.0)
@@ -846,7 +834,7 @@ def test_manual_record_supersedes_a_prompt(detecting, monkeypatch):
     import whisper_to_me.server as server
 
     def fake_record_session(transcriber, title, notes_dir, **kwargs):
-        assert kwargs["should_stop"] is None  # manual: no meeting-end auto-stop
+        assert kwargs["should_stop"] is None
         kwargs["events"](
             {"type": "status", "state": "recording", "title": title,
              "started": kwargs["started"].isoformat()}
@@ -896,8 +884,6 @@ def test_simulate_cannot_be_stopped(client, monkeypatch):
 
 
 def test_shutdown_saves_the_active_session(tmp_path, monkeypatch):
-    """uvicorn's SIGTERM path runs the shutdown hook: it must stop the
-    recording and wait for the note to be saved, not drop the session."""
     import time
 
     import whisper_to_me.server as server
@@ -908,7 +894,7 @@ def test_shutdown_saves_the_active_session(tmp_path, monkeypatch):
              "started": kwargs["started"].isoformat()}
         )
         assert kwargs["stop_event"].wait(timeout=10)
-        time.sleep(0.3)  # draining the transcription backlog takes a while
+        time.sleep(0.3)
         return [("0:00:01", "hello")], kwargs["started"]
 
     saved = []

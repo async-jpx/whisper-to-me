@@ -4,7 +4,6 @@
 
 import type { Status } from "./types";
 
-/* The full status frame — the same object GET /api/status returns. */
 export type StatusEvent = { type: "status" } & Status;
 
 export interface LineEvent {

@@ -1,7 +1,6 @@
 /* DTOs for the daemon's REST API. The shapes are pinned by tests/test_api.py
    and server.py — the frontend adapts to the API, never the reverse. */
 
-/* A session occupies the daemon from "starting" until it is back to idle. */
 export type SessionPhase = "starting" | "recording" | "stopping" | "summarizing";
 export type SessionState = "idle" | "prompting" | SessionPhase;
 export type Origin = "manual" | "detected" | "simulate";
@@ -10,11 +9,10 @@ export interface MeetingPrompt {
   id: string;
   title: string;
   trigger: "zoom" | "mic";
-  expires_in_s: number; // as of when the frame was built
+  expires_in_s: number;
   timeout_s: number;
 }
 
-/* Mirrors server.py status_wire: a prompt and a session never coexist. */
 export type Status =
   | { state: "idle"; origin: null; title: null; started: null; elapsed_s: null; prompt: null }
   | {
@@ -49,12 +47,10 @@ export function isActive(s: Status): s is ActiveStatus {
   return s.state !== "idle" && s.state !== "prompting";
 }
 
-/* Idle and prompting both accept a new recording (it supersedes the prompt). */
 export function canStartRecording(s: Status): boolean {
   return s.state === "idle" || s.state === "prompting";
 }
 
-/* Manual and detected recordings stop the same way; simulate never does. */
 export function canStop(s: Status): boolean {
   return isActive(s) && s.origin !== "simulate" && (s.state === "starting" || s.state === "recording");
 }

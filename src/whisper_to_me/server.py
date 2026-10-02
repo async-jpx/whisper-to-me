@@ -5,10 +5,8 @@ reachable off the machine. All the actual work (Whisper, Ollama) already runs
 locally elsewhere in the app; this module just gives a UI a way to drive it
 instead of a terminal.
 
-Meeting detection runs from startup to shutdown and asks before recording:
-a detected meeting becomes a timed prompt that a UI answers by id. Only one
-session (manual record / accepted prompt / simulate) runs at a time: the
-Whisper model is loaded once, lazily, on first use and reused after that. Every
+Only one session (manual record / accepted prompt / simulate) runs at a time:
+the Whisper model is loaded once, lazily, on first use and reused after that. Every
 session's events (transcript lines, echo-filter counts, summarizing/saved/
 error notices, status changes) fan out to every connected WebSocket client
 over a small per-client queue, so a slow or dead client drops events instead
@@ -69,15 +67,15 @@ class ServerOptions:
     system_device: str = "auto"
     keep_echoes: bool = False
     use_aec: bool = True
-    poll: float = 3.0  # seconds between meeting checks
-    silence_timeout: float = 120.0  # detected recordings stop after this much silence
+    poll: float = 3.0
+    silence_timeout: float = 120.0
     template: str | None = None
     diarize: bool = False
-    prompt_timeout: float = runner.PROMPT_TIMEOUT_S  # not a CLI flag: tests shrink it
+    prompt_timeout: float = runner.PROMPT_TIMEOUT_S
 
 
 class BusyError(RuntimeError):
-    """The request doesn't apply to the current state (HTTP 409)."""
+    pass
 
 
 class _Client:
@@ -95,10 +93,6 @@ class _Client:
 
 
 class MeetingProbe(Protocol):
-    """The detector's only window onto the OS. Injected so the API tests run
-    on a scripted probe: a dev machine that is mid-meeting must not make the
-    suite prompt (and preload Whisper)."""
-
     def detect(self) -> runner.Trigger | None: ...
 
     def title_hint(self, trigger: runner.Trigger) -> str | None: ...
@@ -113,9 +107,6 @@ class SystemProbe:
 
 
 def status_wire(state: State, now_mono: float, now: datetime, timeout_s: float) -> dict:
-    """The one definition of the status frame: GET /api/status and every WS
-    status event. `expires_in_s` is derived when the frame is built, so a
-    reconnecting client gets a correct countdown with no clock sync."""
     frame: dict = {
         "type": "status",
         "state": "idle",
@@ -145,21 +136,12 @@ def status_wire(state: State, now_mono: float, now: datetime, timeout_s: float) 
 
 
 class SessionManager:
-    """Owns the daemon's single runner.State and the threads that move it
-    besides HTTP: the meeting detector (open() to close()) and at most one
-    session thread.
-
-    Every write is `_transition(fn)`: a pure runner function applied under
-    `_lock`, with the resulting status frame enqueued to clients under the
-    same lock so every client sees transitions in order. Lock order is
-    `_lock` then `_clients_lock`, everywhere."""
-
     def __init__(self, opts: ServerOptions, probe: MeetingProbe | None = None) -> None:
         self.opts = opts
         self._probe = probe if probe is not None else SystemProbe()
         self._state: State = Idle()
         self._lock = threading.Lock()
-        self._wake = threading.Event()  # cuts the detector's sleep short
+        self._wake = threading.Event()
         self._closing = threading.Event()
         self._detector: threading.Thread | None = None
         self._session_thread: threading.Thread | None = None
@@ -224,11 +206,7 @@ class SessionManager:
         with self._lock:
             return self._status_locked()
 
-    # -- state + event fanout ---------------------------------------------
-
     def _transition(self, fn: Callable[[State], object]) -> object:
-        """Apply a pure runner transition; returns its result (a State, or a
-        runner.Ask / runner.Refused verdict that leaves the state alone)."""
         with self._lock:
             result = fn(self._state)
             if isinstance(result, State) and result != self._state:
@@ -249,9 +227,6 @@ class SessionManager:
             client.send(event)
 
     def _sink(self, event: dict) -> None:
-        """The event sink passed into record_session/summarize_and_save.
-        record_session's own `status` event only ever means "audio is
-        flowing"; everything else is forwarded as-is, minus CLI-only extras."""
         if event.get("type") == "status":
             started = datetime.fromisoformat(event["started"])
             self._transition(lambda s: runner.recording_started(s, started))
@@ -278,18 +253,12 @@ class SessionManager:
             if client in self._clients:
                 self._clients.remove(client)
 
-    # -- meeting detection ----------------------------------------------
-
     def open(self) -> None:
-        """Start the meeting detector. Idempotent."""
         if self._detector is None:
             self._detector = threading.Thread(target=self._detect_loop, daemon=True)
             self._detector.start()
 
     def close(self) -> None:
-        """Shutdown (uvicorn's SIGTERM path): stop the detector, stop a
-        stoppable session, and wait for it to save — the desktop shell never
-        SIGKILLs a busy daemon, so an unbounded join is the point."""
         self._closing.set()
         self._wake.set()
         if self._detector is not None:
@@ -310,14 +279,12 @@ class SessionManager:
                 try:
                     self._poll_meeting()
                     polled = True
-                except Exception as exc:  # a dead detector would end detection for good
+                except Exception as exc:
                     console.print(f"[red]Meeting detection failed: {exc}[/red]")
             with self._lock:
                 state = self._state
             timeout = self.opts.poll
             if polled and isinstance(state, Prompting):
-                # Wake on the deadline, so the timeout lands when the countdown
-                # hits zero rather than up to a poll later.
                 timeout = min(timeout, max(0.0, state.prompt.deadline - time.monotonic()))
             self._wake.wait(timeout)
             self._wake.clear()
@@ -338,13 +305,9 @@ class SessionManager:
             )
         )
         if isinstance(opened, Prompting) and opened.prompt.id == prompt_id:
-            # An accepted prompt then starts without a model-load gap.
             threading.Thread(target=self._get_transcriber, daemon=True).start()
 
-    # -- commands (HTTP threads) --------------------------------------------
-
     def start_record(self, title: str | None, template: str | None = None) -> None:
-        """Allowed while prompting too: the prompt is superseded."""
         now = datetime.now()
         plan = runner.manual_plan(title, template or self.opts.template, now)
         self._start(plan, now)
@@ -373,13 +336,10 @@ class SessionManager:
             raise BusyError(result.reason)
 
     def stop(self) -> None:
-        """Stops manual and detected recordings alike; detection carries on."""
         result = self._transition(runner.stop)
         if isinstance(result, Refused):
             raise BusyError(result.reason)
         result.stop.set()
-
-    # -- the one session run path -------------------------------------------
 
     def _launch(self, active: Active) -> None:
         self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar

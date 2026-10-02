@@ -59,7 +59,6 @@ export function LivePane() {
         await api.putScratchpad(content);
         scratchpadErrorShownRef.current = false;
       } catch (err) {
-        // 409: the session ended between the check and the PUT.
         if (err instanceof ApiError && err.status === 409) return;
         if (!scratchpadErrorShownRef.current) {
           toast("Couldn't save your notes to the session.", "error");

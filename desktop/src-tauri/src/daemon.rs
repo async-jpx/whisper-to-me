@@ -52,8 +52,6 @@ pub struct Prompt {
     pub expires_in_s: f64,
 }
 
-/// The daemon's status frame, parsed once at the WS boundary. `received`
-/// anchors both relative clocks (`elapsed_base`, `prompt.expires_in_s`).
 #[derive(Default, Clone)]
 pub struct Status {
     pub online: bool,
@@ -70,7 +68,6 @@ impl Status {
         self.online && matches!(self.phase, Phase::Idle | Phase::Prompting)
     }
 
-    /// The daemon refuses to stop a simulate (it ends with its input file).
     pub fn can_stop(&self) -> bool {
         self.online
             && matches!(self.phase, Phase::Starting | Phase::Recording)
@@ -82,8 +79,6 @@ impl Status {
     }
 }
 
-/// Unknown state/origin strings degrade to Idle/None rather than failing,
-/// so a newer daemon never wedges an older shell.
 fn parse_status(evt: &Value) -> Status {
     let str_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
     let phase = match evt.get("state").and_then(Value::as_str) {
@@ -149,8 +144,6 @@ pub fn api_post_body(path: &str, body: String) {
     });
 }
 
-/// A 409 (the prompt already expired or was answered elsewhere) needs no
-/// handling: the status frame that follows is authoritative.
 pub fn answer_prompt(id: &str, record: bool) {
     let answer = if record { "record" } else { "dismiss" };
     api_post_body(&format!("/api/prompts/{id}"), format!(r#"{{"answer": "{answer}"}}"#));
@@ -335,9 +328,6 @@ fn handle_event(app: &AppHandle, evt: &Value) {
                 let mut status = state.status.lock().unwrap();
                 std::mem::replace(&mut *status, next).prompt.map(|p| p.id)
             };
-            // The overlay is the detection notice (no banner: it would land
-            // on top of it). Its page owns the countdown and the buttons;
-            // the shell shows it once per prompt id and hides it when gone.
             match shown {
                 None => crate::prompt::hide(app),
                 Some(id) if prev.as_deref() != Some(id.as_str()) => crate::prompt::show(app),

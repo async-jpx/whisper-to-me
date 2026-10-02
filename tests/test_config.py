@@ -56,8 +56,6 @@ def test_wrong_types_are_ignored(tmp_path):
 
 
 def test_legacy_watch_table_loads(tmp_path):
-    """Detection is always on now; an old config.toml that still carries the
-    removed [watch] keys must load like any other config, not error."""
     path = tmp_path / "config.toml"
     path.write_text(
         '[watch]\nauto_start = false\nconfirm = true\n\n[obsidian]\nvault = "/tmp/v"\n',
@@ -141,9 +139,6 @@ def test_save_file_is_user_only(tmp_path):
 
 
 def test_save_keeps_unknown_booleans_typed(tmp_path):
-    """A hand-written table we don't own (a leftover [watch]) must survive a
-    UI settings save with its TOML types intact — booleans must not come back
-    as strings."""
     path = tmp_path / "config.toml"
     path.write_text("[watch]\nauto_start = false\n", encoding="utf-8")
     save_config({"obsidian_vault": "/tmp/v"}, path)

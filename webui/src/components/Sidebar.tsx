@@ -218,7 +218,6 @@ export function Sidebar() {
 
     const entries: (NoteMeta | null)[] = [];
 
-    // Live session pseudo-entry while a session runs (a prompt is not one)
     if (isActive(status)) {
       entries.push(null); // placeholder for live item
     }

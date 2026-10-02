@@ -41,7 +41,7 @@ class ConsoleSink:
     def __call__(self, event: dict) -> None:
         etype = event["type"]
         if etype == "status":
-            return  # cmd_record already announces its own start
+            return
         if etype == "line":
             console.print(
                 f"[dim][{event['stamp']}][/dim] [bold]{event['speaker']}:[/bold] {event['text']}"

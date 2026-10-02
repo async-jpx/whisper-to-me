@@ -1,15 +1,8 @@
-//! Launch at login through a per-user LaunchAgent the shell writes itself,
-//! offered only when running from inside a .app bundle.
-//!
 //! The agent never execs our binary: when a directly exec'd job's process
 //! exits, launchd kills everything it spawned, including a daemon we leave
 //! running to finish saving a note (measured, even with AbandonProcessGroup
 //! and a separate process group). `/usr/bin/open -a <bundle>` hands the
 //! launch to LaunchServices instead, and the job itself exits at once.
-//!
-//! The plist is the only state: absent = never set up (created enabled on
-//! the first bundled launch), a `Disabled` key = the user opted out. Edits
-//! shape the next login only; nothing is loaded into launchd at runtime.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,7 +15,6 @@ pub struct LoginItem {
 }
 
 impl LoginItem {
-    /// None for the dev binary (not inside a .app bundle).
     pub fn current(label: &str) -> Option<Self> {
         let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
         let bundle = bundle_of(&exe)?;
@@ -37,9 +29,6 @@ impl LoginItem {
         self.plist.is_file() && !disabled_key(&self.plist)
     }
 
-    /// Runs on every launch: creates the agent enabled the first time, and
-    /// otherwise rewrites it with the same on/off state so a moved .app
-    /// never leaves a stale path behind.
     pub fn ensure(&self) -> io::Result<()> {
         self.set_enabled(!self.plist.is_file() || self.is_enabled())
     }
@@ -53,7 +42,6 @@ impl LoginItem {
     }
 }
 
-/// `<X>.app/Contents/MacOS/<bin>` -> `<X>.app`.
 fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;

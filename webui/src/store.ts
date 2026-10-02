@@ -164,7 +164,6 @@ export const useStore = create<AppState>()((set, get) => ({
       scratchpad: fresh ? "" : s.scratchpad,
     }));
     const { view, currentNote } = get();
-    // A prompt is not a session: it must not pull the user out of EmptyState.
     if (view === "empty" && isActive(status) && currentNote === null) {
       set({ view: "transcript" });
     }

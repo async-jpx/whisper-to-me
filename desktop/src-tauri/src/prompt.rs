@@ -1,9 +1,3 @@
-//! The meeting-prompt overlay: a small, undecorated window in the top-right
-//! corner, visible exactly while the daemon's status carries a `prompt`. The
-//! page it shows (`/static/prompt.html`) is served by the local daemon and
-//! owns the countdown and the Record/Dismiss buttons; this module owns only
-//! the window.
-//!
 //! It must float over any app, including another app's native full-screen
 //! Space, without activating us: no Space switch, no focus taken from the
 //! call window. tao offers none of that (its `show()` is
@@ -64,8 +58,6 @@ fn pointer_monitor(win: &WebviewWindow) -> Option<Monitor> {
     win.monitor_from_point(p.x / scale, p.y / scale).ok()?
 }
 
-/// Show the overlay top-right on the monitor under the pointer (else the
-/// primary one), without activating the app.
 pub fn show(app: &AppHandle) {
     let Some(win) = ensure_window(app) else { return };
     if let Some(m) = pointer_monitor(&win).or_else(|| win.primary_monitor().ok().flatten()) {
@@ -178,9 +170,6 @@ mod overlay_macos {
         })
     }
 
-    /// Swap the window's class to `WtmOverlayPanel`, but only when the
-    /// object layout provably matches; otherwise keep the plain window
-    /// (collection behavior + level still apply) rather than corrupt memory.
     unsafe fn become_panel(obj: *mut AnyObject) -> bool {
         let isa = &*ffi::object_getClass(obj);
         // The live class is AppKit's KVO subclass NSKVONotifying_TaoWindow.

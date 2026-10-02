@@ -1,6 +1,5 @@
 """runner's meeting lifecycle: the pure State transitions and the
-meeting-end auto-stop condition. No threads, no audio devices: the watch
-probes meeting_end_condition reads are monkeypatched."""
+meeting-end auto-stop condition."""
 
 from __future__ import annotations
 
@@ -32,9 +31,6 @@ def prompting(prompt_id="a1", trigger="zoom", hint="Weekly sync", deadline=100.0
 
 def manual_active():
     return runner.start(Idle(), runner.manual_plan("Standup", None, NOW), NOW)
-
-
-# ---------- observe: the detector poll ----------
 
 
 def test_idle_with_trigger_asks():
@@ -72,9 +68,6 @@ def test_active_ignores_detection():
     assert runner.observe(active, None, 0.0) is active
 
 
-# ---------- open_prompt: compare-and-set + title/template rules ----------
-
-
 def test_open_prompt_loses_to_a_session_started_during_the_hint():
     active = manual_active()
     assert runner.open_prompt(active, "a1", "zoom", None, None, 0.0, NOW) is active
@@ -101,9 +94,6 @@ def test_open_prompt_title_and_template_rules():
 def test_open_prompt_uses_the_timeout():
     state = runner.open_prompt(Idle(), "a1", "mic", None, None, 10.0, NOW, timeout_s=0.5)
     assert state.prompt.deadline == 10.5
-
-
-# ---------- answer ----------
 
 
 def test_record_answer_starts_a_detected_session():
@@ -136,17 +126,12 @@ def test_answer_without_a_live_prompt_refused(state):
 
 
 def test_stale_answer_never_reaches_the_next_prompt():
-    """Prompt a1 times out, the meeting ends, prompt b2 opens for the next
-    meeting; a late Record click on a1 must not start recording b2."""
     state = runner.observe(prompting("a1", deadline=100.0), "zoom", 100.0)
     state = runner.observe(state, None, 103.0)
     assert runner.observe(state, "zoom", 106.0) == Ask("zoom")
     second = runner.open_prompt(state, "b2", "zoom", None, None, 106.0, NOW)
     assert runner.answer(second, "a1", "record", NOW, 107.0) == Refused("prompt expired")
     assert runner.answer(second, "b2", "record", NOW, 107.0).plan.origin == "detected"
-
-
-# ---------- start / stop ----------
 
 
 def test_manual_start_supersedes_a_prompt():
@@ -197,9 +182,6 @@ def test_recording_started_never_resurrects_stopping():
 
 def test_session_end_sits_out():
     assert runner.session_ended(manual_active()) == Idle(sitting_out=True)
-
-
-# ---------- meeting-end auto-stop (meeting_end_condition) ----------
 
 
 class FakeRecorder:
@@ -277,7 +259,7 @@ def test_unavailable_api_falls_back_to_silence_timeout(quiet_watch, monkeypatch)
     recs = [FakeRecorder()]
     assert should_stop(recs) is False  # None = no signal, never a stop
     time.sleep(0.08)
-    assert should_stop(recs) is True  # …but the silence timeout still ends it
+    assert should_stop(recs) is True
 
 
 def test_zoom_end_still_stops(quiet_watch, monkeypatch):

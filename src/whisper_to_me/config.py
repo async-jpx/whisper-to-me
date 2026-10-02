@@ -97,9 +97,6 @@ def _toml_str(value: str) -> str:
 
 
 def _toml_value(value: object) -> str:
-    """Serialize one scalar; bools/numbers keep their TOML types so a
-    hand-written boolean (say, a leftover `[watch]` table) survives a UI
-    settings save."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):

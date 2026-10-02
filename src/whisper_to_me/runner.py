@@ -1,16 +1,4 @@
-"""The daemon's meeting lifecycle, modelled as data.
-
-Detection is always on: one `State` value (Idle | Prompting | Active) is
-changed only by the pure transition functions here, which server.py's
-SessionManager applies under its lock. A detected meeting becomes a Prompt
-with a 60 s deadline; Record starts a detected session, Dismiss or the
-timeout sits the meeting out until its trigger clears.
-
-A detected recording ends on its own when the meeting does
-(meeting_end_condition): Zoom's helper process exits, the call app releases
-the microphone (watch.mic_in_use_by_others, macOS 14+), or — the fallback
-that always works — nothing has been heard for `silence_timeout` seconds.
-"""
+"""The daemon's meeting lifecycle, modelled as data."""
 
 from __future__ import annotations
 
@@ -29,7 +17,6 @@ from .session import StopCondition, console
 # signal is about the *app*, not the audio.
 MIC_RELEASE_GRACE = 10.0
 
-# An unanswered prompt counts as dismissed after this long.
 PROMPT_TIMEOUT_S = 60.0
 
 Trigger = Literal["zoom", "mic"]
@@ -38,27 +25,14 @@ Phase = Literal["starting", "recording", "stopping", "summarizing"]
 Answer = Literal["record", "dismiss"]
 
 
-# -- the daemon's meeting lifecycle: one State value, pure transitions -------
-#
-#   Idle ──trigger──▶ Ask ──(title hint)──▶ open_prompt ──▶ Prompting(p)
-#   Prompting(p) ──answer(p.id, record)──▶ Active(detected)
-#   Prompting(p) ──answer(p.id, dismiss) / deadline──▶ Idle(sitting_out=True)
-#   Prompting(p) ──trigger gone──▶ Idle()               (ended unanswered)
-#   Idle | Prompting ──start(manual / simulate)──▶ Active  (prompt superseded)
-#   Active ──session thread exits──▶ Idle(sitting_out=True)
-#   Idle(sitting_out=True) ──trigger gone──▶ Idle()
-
-
 @dataclass(frozen=True)
 class Prompt:
-    """A detected meeting awaiting Record / Dismiss."""
-
-    id: str  # random per prompt: a stale or foreign answer can never match
+    id: str
     trigger: Trigger
     title: str
-    real_title: bool  # title came from a calendar/Zoom hint, not a placeholder
+    real_title: bool
     template: str | None
-    deadline: float  # time.monotonic(); at or past it the prompt is dismissed
+    deadline: float
 
 
 @dataclass(frozen=True)
@@ -70,27 +44,21 @@ class SimulateSource:
 
 @dataclass(frozen=True)
 class SessionPlan:
-    """Everything a session thread needs, decided before it starts — one plan
-    type for every origin so the daemon has a single run path."""
-
     origin: Origin
     title: str
     template: str | None
-    auto_title: bool  # let the summarizer replace a placeholder title
-    find_brief: bool  # "Last time…" lookup, only for a real meeting name
-    trigger: Trigger | None = None  # detected only: arms meeting_end_condition
+    auto_title: bool
+    find_brief: bool
+    trigger: Trigger | None = None
     simulate: SimulateSource | None = None
 
     @property
     def stoppable(self) -> bool:
-        # simulate_session takes no stop_event: a FileRecorder runs to EOF.
         return self.origin != "simulate"
 
 
 @dataclass(frozen=True)
 class Idle:
-    # A meeting we already handled (recorded, dismissed, timed out) is still
-    # detected: don't prompt for it again until its trigger goes away.
     sitting_out: bool = False
 
 
@@ -112,22 +80,15 @@ State = Idle | Prompting | Active
 
 @dataclass(frozen=True)
 class Ask:
-    """observe's verdict: a new meeting appeared. Fetch its title hint, then
-    call open_prompt."""
-
     trigger: Trigger
 
 
 @dataclass(frozen=True)
 class Refused:
-    """The request doesn't apply to the current state (HTTP 409)."""
-
     reason: str
 
 
 def observe(state: State, trigger: Trigger | None, now: float) -> State | Ask:
-    """One detector poll; `now` is time.monotonic(). Returns `state` itself
-    when nothing changes."""
     match state:
         case Active():
             return state
@@ -153,15 +114,11 @@ def open_prompt(
     wall_now: datetime,
     timeout_s: float = PROMPT_TIMEOUT_S,
 ) -> State:
-    """Compare-and-set after the title-hint I/O: only a plain Idle becomes
-    Prompting. Anything that happened meanwhile (a manual record) wins."""
     if state != Idle():
         return state
     title = hint or (
         f"{'Zoom meeting' if trigger == 'zoom' else 'Meeting'} {wall_now:%d %b %H:%M}"
     )
-    # An explicit template wins; otherwise auto-suggest from the real meeting
-    # name, never from the timestamp placeholder.
     template = default_template or templates.suggest_template(hint)
     return Prompting(
         Prompt(
@@ -178,9 +135,6 @@ def open_prompt(
 def answer(
     state: State, prompt_id: str, choice: Answer, now: datetime, now_mono: float
 ) -> State | Refused:
-    """Only the live prompt, before its deadline, can be answered. A late
-    click, a second surface answering, or an answer to a prompt that a
-    manual record superseded is refused — never carried over."""
     match state:
         case Prompting(prompt=prompt) if prompt.id == prompt_id and now_mono < prompt.deadline:
             if choice == "dismiss":
@@ -190,17 +144,12 @@ def answer(
 
 
 def start(state: State, plan: SessionPlan, now: datetime) -> State | Refused:
-    """Manual record / simulate: allowed from Idle or Prompting (the prompt
-    is superseded), refused while a session is active."""
     if isinstance(state, Active):
         return Refused(f"busy: {state.phase}")
     return Active(plan, "starting", now, threading.Event())
 
 
 def stop(state: State) -> State | Refused:
-    """Any stoppable origin — a detected recording stops exactly like a
-    manual one. Repeat stops while winding down are no-ops. The caller sets
-    the returned state's `stop` event."""
     match state:
         case Active(plan=plan) if not plan.stoppable:
             return Refused(f"busy: {state.phase}")
@@ -215,9 +164,6 @@ def stop(state: State) -> State | Refused:
 
 
 def recording_started(state: State, started: datetime) -> State:
-    """record_session's own status event: audio is flowing. Takes its
-    `started` (simulate's epoch names the live journal) but never resurrects
-    a phase past "recording" — the wind-down is what the user is watching."""
     if not isinstance(state, Active):
         return state
     phase = "recording" if state.phase == "starting" else state.phase
@@ -231,14 +177,10 @@ def summarizing(state: State) -> State:
 
 
 def session_ended(state: State) -> State:
-    """Whatever ended the session, sit out a meeting that is still live: Stop
-    must never be followed by an instant re-prompt for the same call."""
     return Idle(sitting_out=True)
 
 
 def manual_plan(title: str | None, template: str | None, now: datetime) -> SessionPlan:
-    # Brief only for a user-supplied title: the placeholder can't match a
-    # prior meeting meaningfully.
     return SessionPlan(
         origin="manual",
         title=title or f"Meeting {now:%d %b %H:%M}",
@@ -260,8 +202,6 @@ def detected_plan(prompt: Prompt) -> SessionPlan:
 
 
 def simulate_plan(src: SimulateSource, template: str | None, now: datetime) -> SessionPlan:
-    # "Simulation <time>" is real-ish, so a second run exercises the brief
-    # path mic-free by matching the first run's note.
     return SessionPlan(
         origin="simulate",
         title=f"Simulation {now:%d %b %H:%M}",
@@ -273,9 +213,6 @@ def simulate_plan(src: SimulateSource, template: str | None, now: datetime) -> S
 
 
 def meeting_end_condition(trigger: Trigger, silence_timeout: float) -> StopCondition:
-    """When a detected recording ends on its own: Zoom's helper exits, the
-    call app releases the microphone, or nothing is heard for
-    `silence_timeout` seconds."""
     last_speech = time.monotonic()
     mic_released_at: float | None = None
     call_app_seen = False  # arm mic-release only after the app showed up
