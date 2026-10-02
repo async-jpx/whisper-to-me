@@ -56,47 +56,104 @@
     display: inline-flex; align-items: center; gap: 6px;
   }
   button:disabled { opacity: 0.5; cursor: default; }
+  .head .spacer { flex: 1; }
+  #countdown {
+    font-variant-numeric: tabular-nums; text-transform: none;
+    letter-spacing: 0; font-weight: 500;
+  }
+  .bar {
+    height: 3px; border-radius: 2px; background: var(--border);
+    margin: 0 0 10px; overflow: hidden;
+  }
+  #bar { display: block; height: 100%; width: 100%; background: var(--accent); }
   .rec { width: 8px; height: 8px; border-radius: 50%; background: #fff; }
 </style>
 </head>
 <body>
-  <div class="head"><span class="dot"></span><span>Meeting detected</span></div>
+  <div class="head">
+    <span class="dot"></span><span>Meeting detected</span>
+    <span class="spacer"></span><span id="countdown"></span>
+  </div>
   <div id="title">Meeting</div>
+  <div class="bar"><i id="bar"></i></div>
   <div class="actions">
-    <button id="ignore">Ignore</button>
-    <button id="record" class="primary"><span class="rec"></span><span>Record</span></button>
+    <button id="dismiss" disabled>Dismiss</button>
+    <button id="record" class="primary" disabled><span class="rec"></span><span>Record</span></button>
   </div>
 <script>
 "use strict";
 (function () {
   const titleEl = document.getElementById("title");
   const recordBtn = document.getElementById("record");
-  const ignoreBtn = document.getElementById("ignore");
+  const dismissBtn = document.getElementById("dismiss");
+  const countdownEl = document.getElementById("countdown");
+  const barEl = document.getElementById("bar");
 
-  function apply(status) {
-    if (status.state === "prompting") {
-      titleEl.textContent = status.title || "Meeting";
-      recordBtn.disabled = ignoreBtn.disabled = false;
-    }
-    // Any other state: the desktop shell hides this window; nothing to do.
+  let promptId = null;
+  let deadlineMs = 0;
+  let timeoutS = 60;
+
+  function setEnabled(on) {
+    recordBtn.disabled = dismissBtn.disabled = !on;
   }
 
-  async function respond(accept) {
-    recordBtn.disabled = ignoreBtn.disabled = true;
+  // Buttons follow the latest status frame, never a past click: a 409 used
+  // to leave them disabled for good.
+  function apply(status) {
+    const p = status && status.prompt;
+    if (!p) {
+      promptId = null;
+      setEnabled(false);
+      countdownEl.textContent = "";
+      barEl.style.width = "0%";
+      return;
+    }
+    if (p.id !== promptId) {
+      promptId = p.id;
+      setEnabled(true);
+    }
+    titleEl.textContent = p.title || "Meeting";
+    timeoutS = p.timeout_s > 0 ? p.timeout_s : 60;
+    deadlineMs = performance.now() + p.expires_in_s * 1000;
+    tick();
+  }
+
+  // Display only. At 0 the page just waits: the daemon's deadline resolves
+  // the prompt and the next frame hides the window.
+  function tick() {
+    if (promptId === null) return;
+    const left = Math.max(0, (deadlineMs - performance.now()) / 1000);
+    countdownEl.textContent = `${Math.ceil(left)}s`;
+    barEl.style.width = `${Math.min(1, left / timeoutS) * 100}%`;
+  }
+  setInterval(tick, 250);
+
+  function resync() {
+    return fetch("/api/status").then((r) => r.json()).then(apply).catch(() => {});
+  }
+
+  async function respond(answer) {
+    if (promptId === null) return;
+    const id = promptId;
+    setEnabled(false);
+    let ok = false;
     try {
-      await fetch("/api/watch/respond", {
+      const resp = await fetch(`/api/prompts/${encodeURIComponent(id)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept }),
+        body: JSON.stringify({ answer }),
       });
-    } catch (err) {
-      recordBtn.disabled = ignoreBtn.disabled = false;
+      ok = resp.ok;
+    } catch (err) { /* daemon unreachable: resync below */ }
+    if (!ok) {
+      promptId = null;
+      await resync();
     }
   }
-  recordBtn.addEventListener("click", () => respond(true));
-  ignoreBtn.addEventListener("click", () => respond(false));
+  recordBtn.addEventListener("click", () => respond("record"));
+  dismissBtn.addEventListener("click", () => respond("dismiss"));
 
-  fetch("/api/status").then((r) => r.json()).then(apply).catch(() => {});
+  resync();
 
   // Follow status events so a prompt that changes (or a reconnect) stays
   // accurate even while the window is visible.
