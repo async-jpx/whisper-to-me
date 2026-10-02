@@ -5,8 +5,10 @@ reachable off the machine. All the actual work (Whisper, Ollama) already runs
 locally elsewhere in the app; this module just gives a UI a way to drive it
 instead of a terminal.
 
-Only one session (record / watch / simulate) runs at a time: the Whisper
-model is loaded once, lazily, on first use and reused after that. Every
+Meeting detection runs from startup to shutdown and asks before recording:
+a detected meeting becomes a timed prompt that a UI answers by id. Only one
+session (manual record / accepted prompt / simulate) runs at a time: the
+Whisper model is loaded once, lazily, on first use and reused after that. Every
 session's events (transcript lines, echo-filter counts, summarizing/saved/
 error notices, status changes) fan out to every connected WebSocket client
 over a small per-client queue, so a slow or dead client drops events instead
@@ -18,11 +20,14 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import secrets
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Protocol
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -30,11 +35,18 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import briefs, chat, export, followup, notes, notion_export, search, templates
+from . import briefs, chat, export, followup, notes, notion_export, runner, search, templates
 from . import summarize as summ
+from . import watch
 from .config import load_config, save_config
-from .runner import WatchOptions, watch_loop
-from .session import load_transcriber, record_session, simulate_session, summarize_and_save
+from .runner import Active, Idle, Prompting, Refused, State
+from .session import (
+    console,
+    load_transcriber,
+    record_session,
+    simulate_session,
+    summarize_and_save,
+)
 
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -57,22 +69,15 @@ class ServerOptions:
     system_device: str = "auto"
     keep_echoes: bool = False
     use_aec: bool = True
-    poll: float = 3.0
-    silence_timeout: float = 120.0
+    poll: float = 3.0  # seconds between meeting checks
+    silence_timeout: float = 120.0  # detected recordings stop after this much silence
     template: str | None = None
     diarize: bool = False
-    # Watching is the daemon's resting state (Notion-style): start watching on
-    # boot, and ask (prompt) before recording a detected meeting instead of
-    # auto-recording. `wtm serve --no-watch` / `--auto-record` and the
-    # config.toml [watch] table override these.
-    auto_watch: bool = True
-    confirm_watch: bool = True
+    prompt_timeout: float = runner.PROMPT_TIMEOUT_S  # not a CLI flag: tests shrink it
 
 
 class BusyError(RuntimeError):
-    def __init__(self, state: str) -> None:
-        super().__init__(f"busy: {state}")
-        self.state = state
+    """The request doesn't apply to the current state (HTTP 409)."""
 
 
 class _Client:
@@ -89,35 +94,81 @@ class _Client:
             pass  # slow/dead client: drop rather than block the recorder
 
 
-class SessionManager:
-    """Owns the single active record/watch/simulate session and mirrors its
-    status for GET /api/status and newly-connected WS clients."""
+class MeetingProbe(Protocol):
+    """The detector's only window onto the OS. Injected so the API tests run
+    on a scripted probe: a dev machine that is mid-meeting must not make the
+    suite prompt (and preload Whisper)."""
 
-    def __init__(self, opts: ServerOptions) -> None:
+    def detect(self) -> runner.Trigger | None: ...
+
+    def title_hint(self, trigger: runner.Trigger) -> str | None: ...
+
+
+class SystemProbe:
+    def detect(self) -> runner.Trigger | None:
+        return watch.detect_meeting()
+
+    def title_hint(self, trigger: runner.Trigger) -> str | None:
+        return watch.meeting_title_hint(trigger)
+
+
+def status_wire(state: State, now_mono: float, now: datetime, timeout_s: float) -> dict:
+    """The one definition of the status frame: GET /api/status and every WS
+    status event. `expires_in_s` is derived when the frame is built, so a
+    reconnecting client gets a correct countdown with no clock sync."""
+    frame: dict = {
+        "type": "status",
+        "state": "idle",
+        "origin": None,
+        "title": None,
+        "started": None,
+        "elapsed_s": None,
+        "prompt": None,
+    }
+    match state:
+        case Prompting(prompt=prompt):
+            frame["state"] = "prompting"
+            frame["prompt"] = {
+                "id": prompt.id,
+                "title": prompt.title,
+                "trigger": prompt.trigger,
+                "expires_in_s": round(max(0.0, prompt.deadline - now_mono), 1),
+                "timeout_s": timeout_s,
+            }
+        case Active():
+            frame["state"] = state.phase
+            frame["origin"] = state.plan.origin
+            frame["title"] = state.plan.title
+            frame["started"] = state.started.isoformat()
+            frame["elapsed_s"] = (now - state.started).total_seconds()
+    return frame
+
+
+class SessionManager:
+    """Owns the daemon's single runner.State and the threads that move it
+    besides HTTP: the meeting detector (open() to close()) and at most one
+    session thread.
+
+    Every write is `_transition(fn)`: a pure runner function applied under
+    `_lock`, with the resulting status frame enqueued to clients under the
+    same lock so every client sees transitions in order. Lock order is
+    `_lock` then `_clients_lock`, everywhere."""
+
+    def __init__(self, opts: ServerOptions, probe: MeetingProbe | None = None) -> None:
         self.opts = opts
-        # idle | starting | recording | watching | prompting | stopping |
-        # summarizing. "starting" covers the gap between the start request and
-        # audio actually flowing (first record also loads the Whisper model
-        # here); "prompting" is a watch session holding a detected meeting
-        # while the user decides record/ignore; "stopping" covers the drain
-        # after a stop request (remaining audio is still being transcribed).
-        # These exist so the UI can show honest feedback instead of a button
-        # that appears to do nothing.
-        self.state = "idle"
-        self.title: str | None = None
-        self.started: datetime | None = None
-        self._mode: str | None = None  # "record" | "watch" | "simulate"
+        self._probe = probe if probe is not None else SystemProbe()
+        self._state: State = Idle()
         self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._stop_event: threading.Event | None = None
+        self._wake = threading.Event()  # cuts the detector's sleep short
+        self._closing = threading.Event()
+        self._detector: threading.Thread | None = None
+        self._session_thread: threading.Thread | None = None
         self._transcriber = None
         self._transcriber_lock = threading.Lock()
         self._clients: list[_Client] = []
         self._clients_lock = threading.Lock()
         self._lines: list[dict] = []  # replay buffer for late-joining clients
         self._scratchpad: str = ""  # note-taker's live notes (Phase 4.2)
-        self._watch_decision: str | None = None  # pending prompt answer
-        self._resume_watch = False  # re-arm watch after a preempting session
 
     def _get_transcriber(self):
         with self._transcriber_lock:
@@ -130,9 +181,10 @@ class SessionManager:
         one note the edit endpoints must never touch (see notes.py invariant:
         the journal and the final rewrite target the same path)."""
         with self._lock:
-            if self.state == "idle" or not self.title or not self.started:
-                return None
-            return notes.note_path(self.title, self.started, self.opts.notes_dir).name
+            state = self._state
+        if not isinstance(state, Active):
+            return None
+        return notes.note_path(state.plan.title, state.started, self.opts.notes_dir).name
 
     # -- scratchpad (Phase 4.2): the note-taker's live notes, which guide the
     # final summary. Persisted to a sidecar file (outside the *.md glob, so it
@@ -146,8 +198,8 @@ class SessionManager:
 
     def set_scratchpad(self, text: str) -> None:
         with self._lock:
-            if self.state == "idle":
-                raise BusyError(self.state)
+            if not isinstance(self._state, Active):
+                raise BusyError("no active session")
             self._scratchpad = text
             # Sidecar write stays under the lock so two racing PUTs can't
             # leave the file holding an older value than memory.
@@ -163,21 +215,32 @@ class SessionManager:
             self._scratchpad = ""
         self._scratchpad_path().unlink(missing_ok=True)
 
-    def status(self) -> dict:
-        elapsed = (
-            (datetime.now() - self.started).total_seconds()
-            if self.started and self.state != "idle"
-            else None
+    def _status_locked(self) -> dict:
+        return status_wire(
+            self._state, time.monotonic(), datetime.now(), self.opts.prompt_timeout
         )
-        return {
-            "state": self.state,
-            "mode": self._mode,
-            "title": self.title,
-            "started": self.started.isoformat() if self.started else None,
-            "elapsed_s": elapsed,
-        }
 
-    # -- event fanout ---------------------------------------------------
+    def status(self) -> dict:
+        with self._lock:
+            return self._status_locked()
+
+    # -- state + event fanout ---------------------------------------------
+
+    def _transition(self, fn: Callable[[State], object]) -> object:
+        """Apply a pure runner transition; returns its result (a State, or a
+        runner.Ask / runner.Refused verdict that leaves the state alone)."""
+        with self._lock:
+            result = fn(self._state)
+            if isinstance(result, State) and result != self._state:
+                if isinstance(result, Active) and not isinstance(self._state, Active):
+                    self._lines = []
+                    self._scratchpad = ""
+                self._state = result
+                frame = self._status_locked()
+                with self._clients_lock:
+                    for client in self._clients:
+                        client.send(frame)
+        return result
 
     def _broadcast(self, event: dict) -> None:
         with self._clients_lock:
@@ -185,29 +248,13 @@ class SessionManager:
         for client in clients:
             client.send(event)
 
-    def _broadcast_status(self) -> None:
-        self._broadcast({"type": "status", **self.status()})
-
     def _sink(self, event: dict) -> None:
-        """The event sink passed into record_session/summarize_and_save/
-        watch_loop. `status` events from downstream update our own mirrored
-        state (they're the authoritative source for title/started once a
-        recording is under way) and are re-broadcast with elapsed_s added;
-        everything else is forwarded as-is, minus CLI-only extras."""
+        """The event sink passed into record_session/summarize_and_save.
+        record_session's own `status` event only ever means "audio is
+        flowing"; everything else is forwarded as-is, minus CLI-only extras."""
         if event.get("type") == "status":
-            with self._lock:
-                # A stop has been requested: the session's own progress events
-                # ("recording"/"watching"/"prompting") must not flip the state
-                # back — the wind-down is what the user is watching now.
-                if self.state == "stopping" and event["state"] in (
-                    "recording", "watching", "prompting",
-                ):
-                    return
-                self.state = event["state"]
-                self.title = event.get("title")
-                started = event.get("started")
-                self.started = datetime.fromisoformat(started) if started else None
-            self._broadcast_status()
+            started = datetime.fromisoformat(event["started"])
+            self._transition(lambda s: runner.recording_started(s, started))
             return
         wire = {k: v for k, v in event.items() if k not in _WIRE_EXCLUDE}
         if wire.get("type") == "line":
@@ -218,9 +265,10 @@ class SessionManager:
 
     def add_client(self) -> _Client:
         client = _Client()
-        with self._clients_lock:
-            self._clients.append(client)
-        client.send({"type": "status", **self.status()})
+        with self._lock:
+            with self._clients_lock:
+                self._clients.append(client)
+            client.send(self._status_locked())
         for line in self._lines:
             client.send(line)
         return client
@@ -230,253 +278,177 @@ class SessionManager:
             if client in self._clients:
                 self._clients.remove(client)
 
-    # -- lifecycle --------------------------------------------------------
+    # -- meeting detection ----------------------------------------------
 
-    def _reset_to_idle(self) -> None:
-        with self._lock:
-            self.state = "idle"
-            self.title = None
-            self.started = None
-            self._mode = None
-            self._stop_event = None
-            self._thread = None
-        self._broadcast_status()
+    def open(self) -> None:
+        """Start the meeting detector. Idempotent."""
+        if self._detector is None:
+            self._detector = threading.Thread(target=self._detect_loop, daemon=True)
+            self._detector.start()
 
-    def _run_in_background(self, target) -> None:
-        def guarded() -> None:
-            try:
-                target()
-            except Exception as exc:  # a dead session thread must not wedge the daemon
-                self._sink({"type": "error", "message": str(exc)})
-            finally:
-                self._reset_to_idle()
-                # A manual session that preempted the watch hands the daemon
-                # back to its resting state when it finishes.
-                with self._lock:
-                    resume, self._resume_watch = self._resume_watch, False
-                if resume:
-                    try:
-                        self.start_watch()
-                    except BusyError:
-                        pass  # someone started a new session in the gap
+    def close(self) -> None:
+        """Shutdown (uvicorn's SIGTERM path): stop the detector, stop a
+        stoppable session, and wait for it to save — the desktop shell never
+        SIGKILLs a busy daemon, so an unbounded join is the point."""
+        self._closing.set()
+        self._wake.set()
+        if self._detector is not None:
+            self._detector.join()
+        result = self._transition(runner.stop)
+        if isinstance(result, Active):
+            result.stop.set()
+        if self._session_thread is not None:
+            self._session_thread.join()
 
-        self._thread = threading.Thread(target=guarded, daemon=True)
-        self._thread.start()
+    def _detect_loop(self) -> None:
+        while not self._closing.is_set():
+            with self._lock:
+                state = self._state
+            polled = False
+            # While Active our own recorder holds the mic: nothing to detect.
+            if not isinstance(state, Active):
+                try:
+                    self._poll_meeting()
+                    polled = True
+                except Exception as exc:  # a dead detector would end detection for good
+                    console.print(f"[red]Meeting detection failed: {exc}[/red]")
+            with self._lock:
+                state = self._state
+            timeout = self.opts.poll
+            if polled and isinstance(state, Prompting):
+                # Wake on the deadline, so the timeout lands when the countdown
+                # hits zero rather than up to a poll later.
+                timeout = min(timeout, max(0.0, state.prompt.deadline - time.monotonic()))
+            self._wake.wait(timeout)
+            self._wake.clear()
 
-    def _preempt_watch(self) -> None:
-        """Yield an *idle* watch (watching/prompting — never one that is
-        recording) to a manual record/simulate, remembering to re-arm the
-        watch when that session ends. No-op in any other state."""
-        with self._lock:
-            if self._mode != "watch" or self.state not in ("watching", "prompting"):
-                return
-            thread = self._thread
-            stop_event = self._stop_event
-        if stop_event is not None:
-            stop_event.set()
-        if thread is not None:
-            thread.join(timeout=10)  # watch reacts within its poll interval
-        with self._lock:
-            if self.state == "idle":
-                self._resume_watch = True
+    def _poll_meeting(self) -> None:
+        trigger = self._probe.detect()
+        verdict = self._transition(lambda s: runner.observe(s, trigger, time.monotonic()))
+        if not isinstance(verdict, runner.Ask):
+            return
+        # The calendar osascript can take seconds: fetch it outside the lock,
+        # then open the prompt only if nothing else happened meanwhile.
+        hint = self._probe.title_hint(verdict.trigger)
+        prompt_id = secrets.token_hex(6)
+        opened = self._transition(
+            lambda s: runner.open_prompt(
+                s, prompt_id, verdict.trigger, hint, self.opts.template,
+                time.monotonic(), datetime.now(), self.opts.prompt_timeout,
+            )
+        )
+        if isinstance(opened, Prompting) and opened.prompt.id == prompt_id:
+            # An accepted prompt then starts without a model-load gap.
+            threading.Thread(target=self._get_transcriber, daemon=True).start()
+
+    # -- commands (HTTP threads) --------------------------------------------
 
     def start_record(self, title: str | None, template: str | None = None) -> None:
-        chosen_template = template or self.opts.template
-        self._preempt_watch()  # "New meeting" wins over an idle watch
-        with self._lock:
-            if self.state != "idle":
-                raise BusyError(self.state)
-            started = datetime.now()
-            final_title = title or f"Meeting {started:%d %b %H:%M}"
-            # "starting" until record_session's own status event confirms
-            # audio is flowing — the first record loads Whisper in between.
-            self.title, self.started, self.state, self._mode = (
-                final_title, started, "starting", "record",
-            )
-            self._stop_event = threading.Event()
-            self._lines = []
-            self._scratchpad = ""
-        self._broadcast_status()
-        self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
-        # Brief only for a user-supplied title — the "Meeting <time>" placeholder
-        # can't match a prior meeting meaningfully.
-        if title:
-            brief = briefs.find_brief(self.opts.notes_dir, final_title)
-            if brief:
-                self._sink({"type": "brief", **brief})
-
-        def run() -> None:
-            transcriber = self._get_transcriber()
-            transcript_lines, _ = record_session(
-                transcriber,
-                final_title,
-                self.opts.notes_dir,
-                device=self.opts.device,
-                system_device=self.opts.system_device,
-                keep_echoes=self.opts.keep_echoes,
-                use_aec=self.opts.use_aec,
-                diarize=self.opts.diarize,
-                started=started,
-                events=self._sink,
-                stop_event=self._stop_event,
-            )
-            self.state = "summarizing"
-            self._broadcast_status()
-            summarize_and_save(
-                final_title,
-                transcript_lines,
-                started,
-                self.opts.notes_dir,
-                ollama_model=self.opts.ollama_model,
-                context=self.opts.context,
-                auto_title=title is None,
-                user_notes=self.get_scratchpad(),
-                template=chosen_template,
-                events=self._sink,
-            )
-            self._clear_scratchpad()
-
-        self._run_in_background(run)
-
-    def stop_record(self) -> None:
-        with self._lock:
-            if self._mode != "record" or self.state == "idle":
-                raise BusyError(self.state)
-            if self.state in ("stopping", "summarizing"):
-                return  # already winding down: a second stop click is a no-op
-            # Flip to "stopping" *now*: the session thread keeps state
-            # "recording" while it drains the transcription backlog, which can
-            # take many seconds — without this the stop click looks ignored.
-            self.state = "stopping"
-            stop_event = self._stop_event
-        self._broadcast_status()
-        if stop_event is not None:
-            stop_event.set()
-
-    def start_watch(self) -> None:
-        with self._lock:
-            if self.state != "idle":
-                raise BusyError(self.state)
-            self.title, self.started, self.state, self._mode = None, None, "watching", "watch"
-            self._stop_event = threading.Event()
-            self._lines = []
-            self._scratchpad = ""
-            self._watch_decision = None
-        self._broadcast_status()
-        self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
-        stop_event = self._stop_event
-
-        def run() -> None:
-            opts = WatchOptions(
-                title=None,
-                device=self.opts.device,
-                system_device=self.opts.system_device,
-                keep_echoes=self.opts.keep_echoes,
-                use_aec=self.opts.use_aec,
-                poll=self.opts.poll,
-                silence_timeout=self.opts.silence_timeout,
-                notes_dir=self.opts.notes_dir,
-                ollama_model=self.opts.ollama_model,
-                context=self.opts.context,
-                no_summary=False,
-                template=self.opts.template,
-                diarize=self.opts.diarize,
-                confirm=self.opts.confirm_watch,
-            )
-            # The transcriber is passed lazily: a daemon that watches from
-            # boot must not hold the Whisper model before a recording starts.
-            watch_loop(
-                self._get_transcriber,
-                opts,
-                events=self._sink,
-                stop_event=stop_event,
-                scratchpad=self.get_scratchpad,
-                clear_scratchpad=self._clear_scratchpad,
-                decision=self._take_watch_decision,
-            )
-
-        self._run_in_background(run)
-
-    def _take_watch_decision(self) -> str | None:
-        """Consume the pending prompt answer (watch_loop polls this)."""
-        with self._lock:
-            choice, self._watch_decision = self._watch_decision, None
-            return choice
-
-    def respond_watch(self, accept: bool) -> None:
-        """Answer the meeting prompt — only meaningful while prompting."""
-        with self._lock:
-            if self._mode != "watch" or self.state != "prompting":
-                raise BusyError(self.state)
-            self._watch_decision = "accept" if accept else "ignore"
-
-    def stop_watch(self) -> None:
-        with self._lock:
-            if self._mode != "watch" or self.state == "idle":
-                raise BusyError(self.state)
-            if self.state in ("stopping", "summarizing"):
-                return  # already winding down
-            self.state = "stopping"
-            stop_event = self._stop_event
-        self._broadcast_status()
-        if stop_event is not None:
-            stop_event.set()
+        """Allowed while prompting too: the prompt is superseded."""
+        now = datetime.now()
+        plan = runner.manual_plan(title, template or self.opts.template, now)
+        self._start(plan, now)
 
     def start_simulate(
         self, mic: str, system: str | None, no_summary: bool, template: str | None = None
     ) -> None:
-        chosen_template = template or self.opts.template
-        self._preempt_watch()  # simulations win over an idle watch too
-        with self._lock:
-            if self.state != "idle":
-                raise BusyError(self.state)
-            started = datetime.now()
-            final_title = f"Simulation {started:%d %b %H:%M}"
-            self.title, self.started, self.state, self._mode = (
-                final_title, started, "recording", "simulate",
-            )
-            self._stop_event = threading.Event()
-            self._lines = []
-            self._scratchpad = ""
-        self._broadcast_status()
+        now = datetime.now()
+        src = runner.SimulateSource(mic, system, no_summary)
+        plan = runner.simulate_plan(src, template or self.opts.template, now)
+        self._start(plan, now)
+
+    def _start(self, plan: runner.SessionPlan, now: datetime) -> None:
+        result = self._transition(lambda s: runner.start(s, plan, now))
+        if isinstance(result, Refused):
+            raise BusyError(result.reason)
+        self._launch(result)
+
+    def answer_prompt(self, prompt_id: str, choice: runner.Answer) -> None:
+        result = self._transition(
+            lambda s: runner.answer(s, prompt_id, choice, datetime.now(), time.monotonic())
+        )
+        if isinstance(result, Active):
+            self._launch(result)
+        elif isinstance(result, Refused):
+            raise BusyError(result.reason)
+
+    def stop(self) -> None:
+        """Stops manual and detected recordings alike; detection carries on."""
+        result = self._transition(runner.stop)
+        if isinstance(result, Refused):
+            raise BusyError(result.reason)
+        result.stop.set()
+
+    # -- the one session run path -------------------------------------------
+
+    def _launch(self, active: Active) -> None:
         self._scratchpad_path().unlink(missing_ok=True)  # drop any stale sidecar
-        # Simulate has a real-ish title ("Simulation <time>"), so it exercises
-        # the brief path mic-free: a second run matches the first run's note.
-        brief = briefs.find_brief(self.opts.notes_dir, final_title)
-        if brief:
-            self._sink({"type": "brief", **brief})
+        if active.plan.find_brief:
+            brief = briefs.find_brief(self.opts.notes_dir, active.plan.title)
+            if brief:
+                self._sink({"type": "brief", **brief})
 
-        def run() -> None:
-            transcriber = self._get_transcriber()
-            transcript_lines, _ = simulate_session(
+        def guarded() -> None:
+            try:
+                self._run(active)
+            except Exception as exc:  # a dead session thread must not wedge the daemon
+                self._sink({"type": "error", "message": str(exc)})
+            finally:
+                self._transition(runner.session_ended)
+
+        self._session_thread = threading.Thread(target=guarded, daemon=True)
+        self._session_thread.start()
+
+    def _run(self, active: Active) -> None:
+        plan, opts = active.plan, self.opts
+        transcriber = self._get_transcriber()
+        if plan.simulate is not None:
+            transcript_lines, started = simulate_session(
                 transcriber,
-                final_title,
-                self.opts.notes_dir,
-                mic,
-                system_path=system,
-                keep_echoes=self.opts.keep_echoes,
-                use_aec=self.opts.use_aec,
-                diarize=self.opts.diarize,
+                plan.title,
+                opts.notes_dir,
+                plan.simulate.mic,
+                system_path=plan.simulate.system,
+                keep_echoes=opts.keep_echoes,
+                use_aec=opts.use_aec,
+                diarize=opts.diarize,
                 events=self._sink,
             )
-            self.state = "summarizing"
-            self._broadcast_status()
-            summarize_and_save(
-                final_title,
-                transcript_lines,
-                started,
-                self.opts.notes_dir,
-                ollama_model=self.opts.ollama_model,
-                context=self.opts.context,
-                no_summary=no_summary,
-                auto_title=True,
-                user_notes=self.get_scratchpad(),
-                template=chosen_template,
-                events=self._sink,
+        else:
+            should_stop = (
+                runner.meeting_end_condition(plan.trigger, opts.silence_timeout)
+                if plan.trigger is not None
+                else None
             )
-            self._clear_scratchpad()
-
-        self._run_in_background(run)
+            transcript_lines, started = record_session(
+                transcriber,
+                plan.title,
+                opts.notes_dir,
+                device=opts.device,
+                system_device=opts.system_device,
+                should_stop=should_stop,
+                keep_echoes=opts.keep_echoes,
+                use_aec=opts.use_aec,
+                diarize=opts.diarize,
+                started=active.started,
+                events=self._sink,
+                stop_event=active.stop,
+            )
+        self._transition(runner.summarizing)
+        summarize_and_save(
+            plan.title,
+            transcript_lines,
+            started,
+            opts.notes_dir,
+            ollama_model=opts.ollama_model,
+            context=opts.context,
+            no_summary=plan.simulate.no_summary if plan.simulate is not None else False,
+            auto_title=plan.auto_title,
+            user_notes=self.get_scratchpad(),
+            template=plan.template,
+            events=self._sink,
+        )
+        self._clear_scratchpad()
 
 
 class RecordStartBody(BaseModel):
@@ -493,8 +465,8 @@ class TaskToggleBody(BaseModel):
     checked: bool
 
 
-class WatchRespondBody(BaseModel):
-    accept: bool
+class PromptAnswerBody(BaseModel):
+    answer: runner.Answer
 
 
 class SimulateBody(BaseModel):
@@ -606,24 +578,21 @@ def _safe_archived_path(notes_dir: Path, name: str) -> Path | None:
     return _resolve_md(notes.archive_dir(notes_dir), name)
 
 
-def create_app(opts: ServerOptions) -> FastAPI:
+def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAPI:
     app = FastAPI()
-    manager = SessionManager(opts)
+    manager = SessionManager(opts, probe)
     app.state.manager = manager  # tests reach the session state through here
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.on_event("startup")
-    async def _auto_watch() -> None:
-        # Watching is the resting state: the daemon is useful the moment it
-        # boots, no button press needed. Purely local, and in confirm mode it
-        # never records without an explicit yes.
-        if opts.auto_watch:
-            try:
-                manager.start_watch()
-            except BusyError:
-                pass  # a session already started before startup finished
+    async def _open() -> None:
+        manager.open()
+
+    @app.on_event("shutdown")
+    def _close() -> None:
+        manager.close()
 
     @app.get("/")
     def index():
@@ -663,35 +632,19 @@ def create_app(opts: ServerOptions) -> FastAPI:
     @app.post("/api/record/stop", status_code=202)
     def record_stop():
         try:
-            manager.stop_record()
+            manager.stop()
         except BusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True}
 
-    @app.post("/api/watch/start", status_code=202)
-    def watch_start():
+    @app.post("/api/prompts/{prompt_id}", status_code=202)
+    def answer_prompt(prompt_id: str, body: PromptAnswerBody):
+        """Answer the live meeting prompt by id: record starts the detected
+        meeting, dismiss skips it until its trigger clears."""
         try:
-            manager.start_watch()
+            manager.answer_prompt(prompt_id, body.answer)
         except BusyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"ok": True}
-
-    @app.post("/api/watch/stop", status_code=202)
-    def watch_stop():
-        try:
-            manager.stop_watch()
-        except BusyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"ok": True}
-
-    @app.post("/api/watch/respond", status_code=202)
-    def watch_respond(body: WatchRespondBody):
-        """Answer the meeting prompt (state 'prompting'): accept records the
-        detected meeting, ignore skips it until its trigger clears."""
-        try:
-            manager.respond_watch(body.accept)
-        except BusyError as exc:
-            raise HTTPException(status_code=409, detail="no meeting prompt pending") from exc
+            raise HTTPException(status_code=409, detail="prompt expired") from exc
         return {"ok": True}
 
     @app.post("/api/simulate", status_code=202)
@@ -949,7 +902,7 @@ def create_app(opts: ServerOptions) -> FastAPI:
     def push_note_to_notion(name: str):
         """The one sanctioned network export — fires only from an explicit,
         per-note user action in the UI (which confirms first). Never call
-        this from watch/record/summarize paths."""
+        this from detection/record/summarize paths."""
         path = _writable_note_path(name)
         cfg = load_config()
         if not cfg.notion_configured:

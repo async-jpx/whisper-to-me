@@ -318,15 +318,6 @@ def cmd_push(args) -> None:
 def cmd_serve(args) -> None:
     from .server import ServerOptions, run_server
 
-    # Watching-with-a-prompt is the daemon's default resting state; the CLI
-    # flags force the old behaviors, else config.toml's [watch] table decides.
-    cfg = load_config()
-    auto_watch = not args.no_watch and (
-        cfg.watch_auto_start if cfg.watch_auto_start is not None else True
-    )
-    confirm_watch = not args.auto_record and (
-        cfg.watch_confirm if cfg.watch_confirm is not None else True
-    )
     opts = ServerOptions(
         model=args.model,
         language=args.language,
@@ -339,8 +330,6 @@ def cmd_serve(args) -> None:
         use_aec=not args.no_aec,
         poll=args.poll,
         silence_timeout=args.silence_timeout,
-        auto_watch=auto_watch,
-        confirm_watch=confirm_watch,
     )
     console.print(
         f"[bold cyan]wtm serve[/bold cyan] — http://127.0.0.1:{args.port} "
@@ -358,15 +347,11 @@ def _add_serve_args(p: argparse.ArgumentParser) -> None:
                    help="disable the filter that drops mic lines duplicating system audio")
     p.add_argument("--no-aec", action="store_true",
                    help="disable acoustic echo cancellation of system audio from the mic")
-    p.add_argument("--poll", type=float, default=3.0, help="seconds between meeting checks (watch sessions)")
+    p.add_argument("--poll", type=float, default=3.0, help="seconds between meeting checks")
     p.add_argument(
         "--silence-timeout", type=float, default=120.0,
-        help="stop watch recordings after this many seconds of silence",
+        help="stop detected recordings after this many seconds of silence",
     )
-    p.add_argument("--no-watch", action="store_true",
-                   help="don't watch for meetings from startup (watching is the default)")
-    p.add_argument("--auto-record", action="store_true",
-                   help="record detected meetings immediately instead of asking first")
     p.add_argument("--model", default="large-v3-turbo",
                    help="Whisper model: large-v3-turbo (default, most accurate) / medium / small / tiny")
     p.add_argument("--language", default=None, help="force language code, e.g. en, fr, ar")
