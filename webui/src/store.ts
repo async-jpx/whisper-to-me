@@ -13,6 +13,22 @@ import type { NoteMeta, SearchResult, Status, Template } from "./api/types";
    other view has currentNote === null. */
 export type View = "home" | "live" | "note" | "chat" | "templates" | "settings";
 
+/* The open note's two tabs. The rendered summary and the transcript stay
+   mounted across switches, so playback and scroll survive a tab change. */
+export type NoteTab = "summary" | "transcript";
+
+/* Where openNote lands. Only the transcript has a timeline, so only it takes
+   a second. */
+export type NoteFocus = { tab: "summary" } | { tab: "transcript"; t?: number };
+
+/* A request for the transcript tab to show second `t`: scroll to and
+   highlight the line at or just before it, and cue the player there (never
+   autoplay). `seq` makes asking for the same second twice a new request. */
+export interface TranscriptCue {
+  t: number;
+  seq: number;
+}
+
 export interface TranscriptLine {
   kind: "line";
   stamp: string;
@@ -33,12 +49,6 @@ export interface Brief {
   name: string;
 }
 
-/* Where to land inside a note being opened (a search hit's transcript line). */
-export interface NoteTarget {
-  tab?: "transcript";
-  t?: number;
-}
-
 export interface Toast {
   id: number;
   message: string;
@@ -52,6 +62,7 @@ interface ConfirmRequest {
 }
 
 let toastSeq = 0;
+let cueSeq = 0;
 
 export interface AppState {
   // -- daemon status (WS-authoritative) ---------------------------------
@@ -66,14 +77,14 @@ export interface AppState {
   view: View;
   currentNote: string | null;
   currentNoteMd: string | null;
-  /* Set by openNote(name, target); the note view consumes it. */
-  pendingNoteTarget: NoteTarget | null;
   editing: boolean;
   /* Bumped when the note view must re-render its HTML (open handles itself
      via currentNote; save bumps this). A checkbox toggle updates
      currentNoteMd WITHOUT bumping it — re-rendering there would collapse the
      transcript fold and reset scroll. */
   noteRenderSeq: number;
+  noteTab: NoteTab;
+  transcriptCue: TranscriptCue | null;
   /* The editor's current text while editing; null otherwise. Lets the store's
      dirty-guard see unsaved edits without owning the textarea. */
   editorDraft: string | null;
@@ -112,7 +123,10 @@ export interface AppState {
   navigate(view: Exclude<View, "note">): Promise<void>;
   setDrawerOpen(open: boolean): void;
   openLive(): void;
-  openNote(name: string, target?: NoteTarget): Promise<void>;
+  openNote(name: string, focus?: NoteFocus): Promise<void>;
+  setNoteTab(tab: NoteTab): void;
+  /* Switches the open note to its transcript at second `t`. */
+  cueTranscript(t: number): void;
   forgetOpenNote(name: string): void;
   setEditing(editing: boolean, draft?: string | null): void;
   setEditorDraft(draft: string): void;
@@ -137,9 +151,10 @@ export const useStore = create<AppState>()((set, get) => ({
   view: "home",
   currentNote: null,
   currentNoteMd: null,
-  pendingNoteTarget: null,
   editing: false,
   noteRenderSeq: 0,
+  noteTab: "summary",
+  transcriptCue: null,
   editorDraft: null,
   viewArchived: false,
   drawerOpen: false,
@@ -226,6 +241,8 @@ export const useStore = create<AppState>()((set, get) => ({
       view,
       currentNote: null,
       currentNoteMd: null,
+      noteTab: "summary",
+      transcriptCue: null,
       editing: false,
       editorDraft: null,
       drawerOpen: false,
@@ -237,7 +254,7 @@ export const useStore = create<AppState>()((set, get) => ({
   openLive() {
     void get().navigate("live");
   },
-  async openNote(name, target) {
+  async openNote(name, focus = { tab: "summary" }) {
     const s = get();
     if (s.editorDirty() && !(await s.confirmDialog("Discard your unsaved edits?"))) {
       return;
@@ -247,7 +264,11 @@ export const useStore = create<AppState>()((set, get) => ({
       set({
         currentNote: name,
         currentNoteMd: mdText,
-        pendingNoteTarget: target ?? null,
+        noteTab: focus.tab,
+        transcriptCue:
+          focus.tab === "transcript" && focus.t !== undefined
+            ? { t: focus.t, seq: ++cueSeq }
+            : null,
         editing: false,
         editorDraft: null,
         view: "note",
@@ -257,11 +278,19 @@ export const useStore = create<AppState>()((set, get) => ({
       get().toast("Could not load that note.", "error");
     }
   },
+  setNoteTab(tab) {
+    set({ noteTab: tab });
+  },
+  cueTranscript(t) {
+    set({ noteTab: "transcript", transcriptCue: { t, seq: ++cueSeq } });
+  },
   forgetOpenNote(name) {
     if (get().currentNote !== name) return;
     set({
       currentNote: null,
       currentNoteMd: null,
+      noteTab: "summary",
+      transcriptCue: null,
       editing: false,
       editorDraft: null,
       view: "home",

@@ -2,8 +2,10 @@
    daemon binds 127.0.0.1 and nothing here may ever address another host. */
 
 import type {
+  AudioPeaks,
   ExportConfig,
   NewTemplate,
+  NoteLine,
   NoteMeta,
   SearchResult,
   Settings,
@@ -116,6 +118,15 @@ export const api = {
   archivedNotes: async () => (await getJson<WireNoteMeta[]>("/api/archived")).map(parseNoteMeta),
   restoreNote: (name: string) => sendJson<void>("POST", `${archived(name)}/restore`),
   deleteArchived: (name: string) => sendJson<void>("DELETE", archived(name)),
+  transcript: async (name: string) =>
+    (await getJson<{ lines: NoteLine[] }>(`${note(name)}/transcript`)).lines,
+  /* For <audio src>: the daemon answers Range requests with 206, and every
+     fetch counts as "played" for the 30-day retention. */
+  audioUrl: (name: string) => `${note(name)}/audio`,
+  audioPeaks: (name: string) => getJson<AudioPeaks>(`${note(name)}/audio/peaks`),
+  deleteAudio: async (name: string) => {
+    await request(`${note(name)}/audio`, { method: "DELETE" });
+  },
   search: (q: string) =>
     getJson<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
 
