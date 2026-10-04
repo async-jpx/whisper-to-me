@@ -1,5 +1,6 @@
 ---
 name: sales-call
+title: "Sales call"
 description: "Sales call — needs, objections, next steps"
 match: [sales, prospect, demo, discovery call, pitch, customer call, client call]
 ---

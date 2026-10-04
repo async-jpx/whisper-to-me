@@ -84,7 +84,12 @@ summarize.py   Ollama pipeline: windowed JSON fact extraction (structured
 templates.py   meeting templates (default/one-on-one/standup/interview/
                sales-call/brainstorm) as templates/*.md + user overrides in
                ~/.config/whisper-to-me/templates/; suggest_template() matches by
-               title; every template must keep a "## Action Items" + "- [ ]"
+               title; every template must keep a "## Action Items" + "- [ ]";
+               the UI creates/deletes user templates (built-ins are read-only)
+               and sets [templates] favorites/default in config.toml;
+               resolve_template = explicit > configured default >
+               suggest_template > None (built-in default), applied in
+               runner.open_prompt and session.summarize_and_save
 chat.py        local RAG (Phase 4.3): FTS5 retrieve (OR-match) → summary +
                term-matching transcript lines as numbered sources → one _chat
                call with [n] citations; sources filtered to those actually
@@ -103,7 +108,8 @@ diarize.py     speaker diarization within "Others" (beta, opt-in `--diarize` +
 notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite;
                YAML frontmatter (title/date/attendees/tags) on saved notes
 config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
-               [obsidian] vault, [notion] token+database_id); read fresh per
+               [obsidian] vault, [notion] token+database_id, [templates]
+               default+favorites); read fresh per
                use — no restart needed after edits; save_config writes it back
                for the UI's Settings → Connections (local disk, chmod 600, no
                network — connecting is never a token-verification call)
@@ -139,8 +145,13 @@ server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
                POST /api/chat/stream streams chat answers as SSE in the AI SDK
                UI-message-stream protocol (text-delta events + a data-sources
                part), still 127.0.0.1→local Ollama only
-search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
-               has match_all (AND, sidebar default) vs OR (chat/briefs) mode
+search.py      SQLite FTS5 index over notes (a cache: PRAGMA user_version =
+               SCHEMA_VERSION, mismatch → drop + rebuild); notes_fts (one row
+               per note) matches/ranks — search_notes has match_all (AND,
+               sidebar default) vs OR (chat/briefs) mode, bm25 (title ×5) ×
+               recency; hits_fts (title/summary/one row per transcript line
+               with t seconds + speaker) feeds search() = GET /api/search,
+               ≤3 hits per note so the UI can seek to the second
 webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
                Vite + Zustand, all deps bundled locally (no CDN, no runtime
                network). src/legacy.css is the original stylesheet (minus

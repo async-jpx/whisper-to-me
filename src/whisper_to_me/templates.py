@@ -11,6 +11,7 @@ File format is YAML-ish frontmatter + a section-block body:
 
     ---
     name: standup
+    title: "Daily standup"
     description: "Daily standup — per-person updates and blockers"
     match: [standup, stand-up, daily, scrum]
     ---
@@ -22,17 +23,23 @@ File format is YAML-ish frontmatter + a section-block body:
 
 The body replaces the default synthesis sections; the header and the
 faithfulness rules around it stay fixed (see summarize._synth_system).
+
+The UI manages user templates (create/delete) and the per-user preferences in
+config.toml's [templates] table: `favorites` and a `default` that applies
+when no template is picked (see resolve_template for the full precedence).
+Built-ins are read-only from the UI.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
 
 from . import notes
-from .config import CONFIG_PATH
+from .config import CONFIG_PATH, load_config, save_config
 
 console = Console()
 
@@ -47,6 +54,8 @@ class Template:
     match: tuple[str, ...]
     sections: str
     builtin: bool
+    title: str
+    path: Path
 
 
 def _parse_frontmatter(front: str | None) -> dict:
@@ -66,9 +75,15 @@ def _parse_frontmatter(front: str | None) -> dict:
                 for t in value.strip("[]").split(",")
                 if t.strip()
             ]
-        elif key in ("name", "description"):
+        elif key in ("name", "title", "description"):
             meta[key] = value.strip("\"'")
     return meta
+
+
+def valid_sections(sections: str) -> bool:
+    # The UI's checkbox toggle (notes.toggle_task / _TASK_RE) and the
+    # action-item tracker depend on an Action Items section using "- [ ]".
+    return "## Action Items" in sections and "- [ ]" in sections
 
 
 def _parse(path: Path, builtin: bool) -> Template | None:
@@ -80,9 +95,7 @@ def _parse(path: Path, builtin: bool) -> Template | None:
     meta = _parse_frontmatter(front)
     sections = body.strip()
     name = meta.get("name") or path.stem
-    # The UI's checkbox toggle (notes.toggle_task / _TASK_RE) and the
-    # action-item tracker depend on an Action Items section using "- [ ]".
-    if "## Action Items" not in sections or "- [ ]" not in sections:
+    if not valid_sections(sections):
         console.print(
             f"[yellow]Skipping template '{name}' ({path}): needs a "
             "'## Action Items' section with '- [ ]' tasks.[/yellow]"
@@ -94,6 +107,8 @@ def _parse(path: Path, builtin: bool) -> Template | None:
         match=tuple(meta.get("match", ())),
         sections=sections,
         builtin=builtin,
+        title=meta.get("title") or name.replace("-", " ").capitalize(),
+        path=path,
     )
 
 
@@ -128,3 +143,92 @@ def suggest_template(title: str | None) -> str | None:
         if any(term in low for term in t.match):
             return t.name
     return None
+
+
+def resolve_template(explicit: str | None, title: str | None) -> str | None:
+    """The template a meeting is summarized with: an explicit pick, else the
+    configured default, else a title-based suggestion, else None (= the
+    built-in default sections). A configured default that no longer exists
+    is skipped, never an error: a stale config must not break recording."""
+    if explicit:
+        return explicit
+    configured = load_config().default_template
+    if configured and load_template(configured) is not None:
+        return configured
+    return suggest_template(title)
+
+
+MAX_BODY_CHARS = 20_000
+
+
+def create_template(name: str, description: str, body: str) -> Template:
+    """Write a new user template. ValueError for an unusable name or a body
+    missing the Action Items invariant; FileExistsError when the name is taken
+    (built-ins included — the UI never overrides or edits a built-in)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64].strip("-")
+    if not slug:
+        raise ValueError("template name needs at least one letter or digit")
+    sections = body.strip()
+    if len(sections) > MAX_BODY_CHARS:
+        raise ValueError(f"template body is over {MAX_BODY_CHARS} characters")
+    if not valid_sections(sections):
+        raise ValueError("template body needs a '## Action Items' section with '- [ ]' tasks")
+    if load_template(slug) is not None:
+        raise FileExistsError(f"template '{slug}' already exists")
+    title = " ".join(name.split())
+    text = (
+        "---\n"
+        f"name: {slug}\n"
+        f'title: "{title}"\n'
+        f'description: "{" ".join(description.split())}"\n'
+        "match: []\n"
+        "---\n"
+        f"{sections}\n"
+    )
+    USER_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    path = USER_TEMPLATES_DIR / f"{slug}.md"
+    with path.open("x", encoding="utf-8") as fh:  # a stray invalid file still collides
+        fh.write(text)
+    created = _parse(path, builtin=False)
+    if created is None:
+        raise OSError(f"could not read back {path}")
+    return created
+
+
+def delete_template(name: str) -> None:
+    """Remove a user template. LookupError if unknown, PermissionError for a
+    built-in. Drops it from favorites/default unless a built-in of the same
+    name (which the user file was shadowing) takes its place."""
+    t = load_template(name)
+    if t is None:
+        raise LookupError(name)
+    if t.builtin:
+        raise PermissionError(f"'{name}' is a built-in template")
+    t.path.unlink(missing_ok=True)
+    if load_template(name) is not None:
+        return
+    cfg = load_config()
+    updates: dict[str, str | list[str] | None] = {}
+    if name in cfg.favorite_templates:
+        updates["favorite_templates"] = [f for f in cfg.favorite_templates if f != name]
+    if cfg.default_template == name:
+        updates["default_template"] = None
+    if updates:
+        save_config(updates)
+
+
+def set_favorite(name: str, favorite: bool) -> None:
+    """LookupError if `name` is not a template."""
+    if load_template(name) is None:
+        raise LookupError(name)
+    favorites = [f for f in load_config().favorite_templates if f != name]
+    if favorite:
+        favorites.append(name)
+    save_config({"favorite_templates": favorites})
+
+
+def set_default(name: str | None) -> None:
+    """None clears the configured default. LookupError if `name` is unknown."""
+    if name is not None and load_template(name) is None:
+        raise LookupError(name)
+    save_config({"default_template": name})

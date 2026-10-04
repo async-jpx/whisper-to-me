@@ -1,5 +1,6 @@
 ---
 name: one-on-one
+title: "1-on-1"
 description: "1-on-1 — check-in, feedback, growth, follow-ups"
 match: [1:1, 1-1, one on one, one-on-one, 1 on 1, check-in, check in, sync with]
 ---

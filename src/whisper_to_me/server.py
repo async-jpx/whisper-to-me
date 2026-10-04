@@ -36,7 +36,7 @@ from pydantic import BaseModel
 from . import briefs, chat, export, followup, notes, notion_export, runner, search, templates
 from . import summarize as summ
 from . import watch
-from .config import load_config, save_config
+from .config import Config, load_config, save_config
 from .runner import Active, Idle, Prompting, Refused, State
 from .session import (
     console,
@@ -440,6 +440,20 @@ class ScratchpadBody(BaseModel):
     content: str
 
 
+class TemplateCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    body: str
+
+
+class TemplateFavoriteBody(BaseModel):
+    favorite: bool
+
+
+class DefaultTemplateBody(BaseModel):
+    name: str | None
+
+
 class ChatBody(BaseModel):
     question: str
     history: list[dict] = []
@@ -580,12 +594,51 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
         if name is not None and templates.load_template(name) is None:
             raise HTTPException(status_code=400, detail=f"unknown template: {name}")
 
+    def _template_dto(t: templates.Template, cfg: Config) -> dict:
+        default = cfg.default_template
+        if default is None or templates.load_template(default) is None:
+            default = "default"
+        return {
+            "name": t.name,
+            "title": t.title,
+            "description": t.description,
+            "builtin": t.builtin,
+            "favorite": t.name in cfg.favorite_templates,
+            "is_default": t.name == default,
+            "body": t.sections,
+        }
+
     @app.get("/api/templates")
     def list_templates_endpoint():
-        return [
-            {"name": t.name, "description": t.description, "builtin": t.builtin}
-            for t in templates.list_templates()
-        ]
+        cfg = load_config()
+        return [_template_dto(t, cfg) for t in templates.list_templates()]
+
+    @app.post("/api/templates", status_code=201)
+    def create_template_endpoint(body: TemplateCreateBody):
+        try:
+            created = templates.create_template(body.name, body.description, body.body)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _template_dto(created, load_config())
+
+    @app.delete("/api/templates/{name}", status_code=204)
+    def delete_template_endpoint(name: str):
+        try:
+            templates.delete_template(name)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown template: {name}") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.put("/api/templates/{name}/favorite")
+    def favorite_template_endpoint(name: str, body: TemplateFavoriteBody):
+        try:
+            templates.set_favorite(name, body.favorite)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown template: {name}") from exc
+        return _template_dto(templates.load_template(name), load_config())
 
     @app.post("/api/record/start", status_code=202)
     def record_start(body: RecordStartBody = RecordStartBody()):
@@ -718,7 +771,7 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
 
     @app.get("/api/search")
     def search_endpoint(q: str = ""):
-        return search.search_notes(opts.notes_dir, q)
+        return search.search(opts.notes_dir, q)
 
     @app.post("/api/chat")
     def chat_endpoint(body: ChatBody):
@@ -805,6 +858,7 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
             "notion_configured": cfg.notion_configured,
             "notion_database_id": cfg.notion_database_id,  # id is not a secret
             "notion_token_set": bool(cfg.notion_token),    # never the token itself
+            "templates": {"default": cfg.default_template},
         }
 
     @app.get("/api/settings")
@@ -841,6 +895,14 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
     @app.delete("/api/settings/notion")
     def disconnect_notion():
         save_config({"notion_token": None, "notion_database_id": None})
+        return _settings_state()
+
+    @app.put("/api/settings/default-template")
+    def set_default_template(body: DefaultTemplateBody):
+        try:
+            templates.set_default(body.name)
+        except LookupError as exc:
+            raise HTTPException(status_code=400, detail=f"unknown template: {body.name}") from exc
         return _settings_state()
 
     @app.post("/api/notes/{name}/vault")

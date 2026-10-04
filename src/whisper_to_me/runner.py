@@ -119,7 +119,7 @@ def open_prompt(
     title = hint or (
         f"{'Zoom meeting' if trigger == 'zoom' else 'Meeting'} {wall_now:%d %b %H:%M}"
     )
-    template = default_template or templates.suggest_template(hint)
+    template = templates.resolve_template(default_template, hint)
     return Prompting(
         Prompt(
             id=prompt_id,
