@@ -107,6 +107,13 @@ diarize.py     speaker diarization within "Others" (beta, opt-in `--diarize` +
                the extra is missing or a cluster is unconfident
 notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite;
                YAML frontmatter (title/date/attendees/tags) on saved notes
+audio_store.py opt-in kept audio ([recording] keep_audio): each source's
+               block_tap streams int16 into its own temp file placed by
+               capture time (late/stalled tap = silent gap), mixed at stop
+               → afconvert AAC `<note dir>/.wtm-audio/<stem>.m4a` +
+               .peaks.json; follows the note (inferred-title move, archive,
+               restore, delete); temp dirs carry the pid so only a dead
+               process's are cleaned; unplayed 30 days (mtime) → purged
 config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
                [obsidian] vault, [notion] token+database_id, [templates]
                default+favorites); read fresh per

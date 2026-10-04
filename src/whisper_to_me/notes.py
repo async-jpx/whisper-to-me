@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from . import audio_store
 
 DEFAULT_NOTES_DIR = Path.home() / "MeetingNotes"
 
@@ -31,13 +34,20 @@ def _yaml_str(value: str) -> str:
     return '"{}"'.format(value.replace("\\", "\\\\").replace('"', '\\"'))
 
 
-def frontmatter(title: str, started: datetime, attendees: list[str] | None = None) -> str:
+def frontmatter(
+    title: str,
+    started: datetime,
+    attendees: list[str] | None = None,
+    app: str | None = None,
+) -> str:
     """Obsidian-friendly YAML frontmatter block (with trailing newline)."""
     lines = [
         "---",
         f"title: {_yaml_str(title)}",
         f"date: {started:%Y-%m-%dT%H:%M}",
     ]
+    if app:
+        lines.append(f"app: {_yaml_str(app)}")
     if attendees:
         lines.append("attendees: [{}]".format(", ".join(_yaml_str(a) for a in attendees)))
     lines += ["tags: [meeting]", "source: whisper-to-me", "---", ""]
@@ -51,6 +61,74 @@ def split_frontmatter(text: str) -> tuple[str | None, str]:
         if end != -1:
             return text[: end + 5], text[end + 5 :].lstrip("\n")
     return None, text
+
+
+_FM_FIELD_RE = re.compile(r"^([A-Za-z_][\w-]*):[ \t]*(.*)$")
+
+
+def frontmatter_fields(text: str) -> dict[str, str]:
+    """Top-level scalar `key: value` pairs of a note's frontmatter, with
+    double-quoted values (as `_yaml_str` writes them) unquoted. Lists and
+    other YAML stay as raw text — callers only read scalars."""
+    block, _ = split_frontmatter(text)
+    if block is None:
+        return {}
+    fields: dict[str, str] = {}
+    for line in block.splitlines()[1:-1]:
+        m = _FM_FIELD_RE.match(line)
+        if not m:
+            continue
+        value = m.group(2).strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = re.sub(r"\\(.)", r"\1", value[1:-1])
+        fields[m.group(1)] = value
+    return fields
+
+
+def meeting_date(text: str) -> str | None:
+    """ISO meeting start from the frontmatter `date`, None when absent."""
+    raw = frontmatter_fields(text).get("date")
+    try:
+        return datetime.fromisoformat(raw).isoformat() if raw else None
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class TranscriptLine:
+    t: int  # seconds from the start of the meeting
+    stamp: str
+    speaker: str | None
+    text: str
+
+
+_TRANSCRIPT_LINE_RE = re.compile(
+    r"^\*\*\[(\d+):(\d{2}):(\d{2})\]\*\*\s*(?:\*\*([^*\n]+?):\*\*\s*)?(.*)$"
+)
+
+
+def parse_transcript(text: str) -> list[TranscriptLine]:
+    """The `## Transcript` section's `**[H:MM:SS]** [**Speaker:**] text`
+    lines, as written by append_line / save_note."""
+    lines: list[TranscriptLine] = []
+    in_section = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            in_section = line.strip() == "## Transcript"
+            continue
+        m = _TRANSCRIPT_LINE_RE.match(line) if in_section else None
+        if m is None:
+            continue
+        h, mi, sec, speaker, body = m.groups()
+        lines.append(
+            TranscriptLine(
+                t=int(h) * 3600 + int(mi) * 60 + int(sec),
+                stamp=f"{h}:{mi}:{sec}",
+                speaker=speaker,
+                text=body.strip(),
+            )
+        )
+    return lines
 
 
 def note_path(title: str, started: datetime, notes_dir: Path = DEFAULT_NOTES_DIR) -> Path:
@@ -73,7 +151,14 @@ def move_note(path: Path, dest_dir: Path) -> Path:
         dest = dest_dir / f"{path.stem}-{counter}{path.suffix}"
         counter += 1
     path.replace(dest)
+    audio_store.move_audio(path, dest)
     return dest
+
+
+def delete_note(path: Path) -> None:
+    """Delete a note and its kept recording, if any."""
+    path.unlink()
+    audio_store.delete_audio(path)
 
 
 def note_title(path: Path) -> str:
@@ -140,6 +225,7 @@ def save_note(
     started: datetime | None = None,
     attendees: list[str] | None = None,
     user_notes: str = "",
+    app: str | None = None,
 ) -> Path:
     """Write a meeting note (frontmatter + summary + your live notes +
     timestamped transcript) and return its path."""
@@ -148,7 +234,7 @@ def save_note(
     path = note_path(title, started, notes_dir)
 
     body = [
-        frontmatter(title, started, attendees) + f"# {title}",
+        frontmatter(title, started, attendees, app) + f"# {title}",
         "",
         f"*Recorded {started:%A %d %B %Y, %H:%M} — whisper-to-me*",
         "",

@@ -22,6 +22,8 @@ sent by the sanctioned per-note push (see notion_export.py).
     [templates]
     default = "standup"                 # used when no template is picked
     favorites = ["standup"]
+    [recording]
+    keep_audio = false                  # keep each meeting's audio (local m4a)
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ class Config:
     notion_database_id: str | None = None
     default_template: str | None = None
     favorite_templates: tuple[str, ...] = ()
+    keep_audio: bool = False
 
     @property
     def notion_configured(self) -> bool:
@@ -81,6 +84,9 @@ def load_config(path: Path | None = None) -> Config:
     favorites = tmpl.get("favorites")
     if not isinstance(favorites, list):
         favorites = []
+    recording = data.get("recording")
+    if not isinstance(recording, dict):
+        recording = {}
     return Config(
         notes_dir=_path(data.get("notes_dir")),
         obsidian_vault=_path(obsidian.get("vault")),
@@ -88,12 +94,13 @@ def load_config(path: Path | None = None) -> Config:
         notion_database_id=_string(notion.get("database_id")),
         default_template=_string(tmpl.get("default")),
         favorite_templates=tuple(filter(None, map(_string, favorites))),
+        keep_audio=recording.get("keep_audio") is True,
     )
 
 
 # -- writing (UI Settings → Connections) --------------------------------------
 # The UI edits the same file hand-editors use. We keep a tiny TOML writer rather
-# than pull in a dependency: the schema is small and fully string-valued, so the
+# than pull in a dependency: the schema is small (strings and one bool), so the
 # risk is low. Comments are not preserved on rewrite (documented in the UI).
 
 # UI-editable field -> where it lives in the file. Top-level keys have no table.
@@ -104,6 +111,7 @@ _FIELDS: dict[str, tuple[str | None, str]] = {
     "notion_database_id": ("notion", "database_id"),
     "default_template": ("templates", "default"),
     "favorite_templates": ("templates", "favorites"),
+    "keep_audio": ("recording", "keep_audio"),
 }
 
 
@@ -148,12 +156,13 @@ def _dump_toml(data: dict) -> str:
 
 
 def save_config(
-    updates: dict[str, str | list[str] | None], path: Path | None = None
+    updates: dict[str, str | bool | list[str] | None], path: Path | None = None
 ) -> Config:
     """Merge `updates` into the config file and write it back atomically.
 
     Keys are the Config field names in `_FIELDS`; a falsy/blank value (or an
-    empty list) clears that setting (and prunes a table that becomes empty).
+    empty list) clears that setting (and prunes a table that becomes empty);
+    a bool is stored as-is, except False, the default, which clears it too.
     Other keys already in the file are preserved. The file may hold a Notion token, so it is written
     0600. Purely local disk I/O — this adds no network path."""
     path = path or CONFIG_PATH
@@ -165,7 +174,9 @@ def save_config(
 
     for field, value in updates.items():
         table, key = _FIELDS[field]
-        if isinstance(value, list):
+        if isinstance(value, bool):
+            clean = value or None
+        elif isinstance(value, list):
             clean = [v.strip() for v in value if v.strip()] or None
         else:
             clean = value.strip() if isinstance(value, str) else None
