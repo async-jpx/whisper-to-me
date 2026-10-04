@@ -29,7 +29,10 @@ sent by the sanctioned per-note push (see notion_export.py).
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -155,8 +158,15 @@ def _dump_toml(data: dict) -> str:
     return text + "\n" if text else ""
 
 
+Updates = dict[str, str | bool | list[str] | None]
+
+# The daemon serves settings/template writes from a threadpool; each is a
+# read-modify-write of one file, so they must not interleave.
+_SAVE_LOCK = threading.Lock()
+
+
 def save_config(
-    updates: dict[str, str | bool | list[str] | None], path: Path | None = None
+    updates: Updates | Callable[[Config], Updates], path: Path | None = None
 ) -> Config:
     """Merge `updates` into the config file and write it back atomically.
 
@@ -164,8 +174,18 @@ def save_config(
     empty list) clears that setting (and prunes a table that becomes empty);
     a bool is stored as-is, except False, the default, which clears it too.
     Other keys already in the file are preserved. The file may hold a Notion token, so it is written
-    0600. Purely local disk I/O — this adds no network path."""
+    0600. Purely local disk I/O — this adds no network path.
+
+    Pass a function of the current Config to compute updates from it under
+    the same lock (e.g. toggling one entry of a list)."""
     path = path or CONFIG_PATH
+    with _SAVE_LOCK:
+        if callable(updates):
+            updates = updates(load_config(path))
+        return _write_updates(updates, path)
+
+
+def _write_updates(updates: Updates, path: Path) -> Config:
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
@@ -193,8 +213,13 @@ def save_config(
             del data[table]
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(_dump_toml(data), encoding="utf-8")
-    os.chmod(tmp, 0o600)  # holds a secret (Notion token) — keep it user-only
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)  # holds a secret (Notion token) — keep it user-only
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_dump_toml(data))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return load_config(path)

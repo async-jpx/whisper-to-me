@@ -112,6 +112,8 @@ class SystemProbe:
         return watch.meeting_title_hint(trigger)
 
     def meeting_app(self, trigger: runner.Trigger | None) -> str | None:
+        if trigger is None:  # manual start: whoever holds the mic may be dictation
+            return "Zoom" if watch.zoom_meeting_active() else None
         return "Zoom" if trigger == "zoom" else watch.mic_app_name()
 
 

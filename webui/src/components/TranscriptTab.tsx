@@ -110,7 +110,7 @@ export function TranscriptTab({ name, hasAudio }: { name: string; hasAudio: bool
 
   const lines = state.kind === "ready" ? state.lines : null;
   const lastT = lines?.at(-1)?.t ?? 0;
-  const player = usePlayer(peaks?.duration_s ?? lastT);
+  const player = usePlayer(peaks?.duration_s ?? lastT, hasAudio);
   const { playing, time, playFrom, seek } = player;
 
   // Re-read on open and after a save (an edit can change the transcript).

@@ -39,7 +39,7 @@ from pathlib import Path
 from rich.console import Console
 
 from . import notes
-from .config import CONFIG_PATH, load_config, save_config
+from .config import CONFIG_PATH, Config, load_config, save_config
 
 console = Console()
 
@@ -76,7 +76,10 @@ def _parse_frontmatter(front: str | None) -> dict:
                 if t.strip()
             ]
         elif key in ("name", "title", "description"):
-            meta[key] = value.strip("\"'")
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                meta[key] = re.sub(r"\\(.)", r"\1", value[1:-1])
+            else:
+                meta[key] = value.strip("\"'")
     return meta
 
 
@@ -167,7 +170,7 @@ def create_template(name: str, description: str, body: str) -> Template:
     (built-ins included — the UI never overrides or edits a built-in)."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64].strip("-")
     if not slug:
-        raise ValueError("template name needs at least one letter or digit")
+        raise ValueError("template name needs at least one Latin letter (a-z) or digit")
     sections = body.strip()
     if len(sections) > MAX_BODY_CHARS:
         raise ValueError(f"template body is over {MAX_BODY_CHARS} characters")
@@ -179,8 +182,8 @@ def create_template(name: str, description: str, body: str) -> Template:
     text = (
         "---\n"
         f"name: {slug}\n"
-        f'title: "{title}"\n'
-        f'description: "{" ".join(description.split())}"\n'
+        f"title: {notes._yaml_str(title)}\n"
+        f"description: {notes._yaml_str(' '.join(description.split()))}\n"
         "match: []\n"
         "---\n"
         f"{sections}\n"
@@ -207,24 +210,26 @@ def delete_template(name: str) -> None:
     t.path.unlink(missing_ok=True)
     if load_template(name) is not None:
         return
-    cfg = load_config()
-    updates: dict[str, str | list[str] | None] = {}
-    if name in cfg.favorite_templates:
-        updates["favorite_templates"] = [f for f in cfg.favorite_templates if f != name]
-    if cfg.default_template == name:
-        updates["default_template"] = None
-    if updates:
-        save_config(updates)
+    def forget(cfg: Config) -> dict[str, str | list[str] | None]:
+        updates: dict[str, str | list[str] | None] = {}
+        if name in cfg.favorite_templates:
+            updates["favorite_templates"] = [f for f in cfg.favorite_templates if f != name]
+        if cfg.default_template == name:
+            updates["default_template"] = None
+        return updates
+
+    save_config(forget)
 
 
 def set_favorite(name: str, favorite: bool) -> None:
     """LookupError if `name` is not a template."""
     if load_template(name) is None:
         raise LookupError(name)
-    favorites = [f for f in load_config().favorite_templates if f != name]
-    if favorite:
-        favorites.append(name)
-    save_config({"favorite_templates": favorites})
+    def toggle(cfg: Config) -> dict[str, list[str]]:
+        favorites = [f for f in cfg.favorite_templates if f != name]
+        return {"favorite_templates": favorites + [name] if favorite else favorites}
+
+    save_config(toggle)
 
 
 def set_default(name: str | None) -> None:

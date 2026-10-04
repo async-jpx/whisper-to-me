@@ -224,3 +224,23 @@ def test_builtins_have_titles_and_default_sections_unchanged():
     assert by_name["default"].title == "General meeting"
     assert by_name["default"].sections == summ.SYNTH_SECTIONS
     assert all(t.title for t in by_name.values())
+
+
+def test_concurrent_favorite_toggles_keep_every_favorite():
+    import threading
+
+    names = [t.name for t in templates.list_templates()]
+    threads = [threading.Thread(target=templates.set_favorite, args=(n, True)) for n in names]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert sorted(load_config().favorite_templates) == sorted(names)
+
+
+def test_quotes_in_title_and_description_round_trip():
+    t = templates.create_template(
+        'Review "Q3"', 'Says "hi"', "## Action Items\n\n- [ ] x\n"
+    )
+    loaded = templates.load_template(t.name)
+    assert (loaded.title, loaded.description) == ('Review "Q3"', 'Says "hi"')

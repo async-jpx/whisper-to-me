@@ -76,9 +76,10 @@ def mark_played(note: Path) -> None:
 
 def move_audio(src_note: Path, dest_note: Path) -> None:
     """Make the recording follow a note that moved or got renamed."""
+    # Peaks first, like finish(): a visible m4a always has its waveform.
     for src, dest in (
-        (audio_path(src_note), audio_path(dest_note)),
         (peaks_path(src_note), peaks_path(dest_note)),
+        (audio_path(src_note), audio_path(dest_note)),
     ):
         if src.is_file():
             dest.parent.mkdir(parents=True, exist_ok=True)

@@ -27,8 +27,10 @@ export interface Player {
 /* `knownDuration` (from the peaks sidecar) stands in until the file's own
    metadata loads. The element uses preload="none": fetching the recording
    marks it played for the 30-day retention, so only a real play may. A seek
-   before then is held and applied once metadata arrives. */
-export function usePlayer(knownDuration: number): Player {
+   before then is held and applied once metadata arrives. `mounted` must
+   track whether the <audio> element is rendered, so the listeners attach
+   when it appears after the first render. */
+export function usePlayer(knownDuration: number, mounted: boolean): Player {
   const audioRef = useRef<HTMLAudioElement>(null);
   const pendingSeekRef = useRef<number | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -66,7 +68,7 @@ export function usePlayer(knownDuration: number): Player {
       a.removeEventListener("pause", onPause);
       a.removeEventListener("ended", onPause);
     };
-  }, []);
+  }, [mounted]);
 
   // timeupdate fires ~4×/s; follow the playhead per frame while playing.
   useEffect(() => {
