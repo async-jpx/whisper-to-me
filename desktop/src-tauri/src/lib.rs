@@ -25,7 +25,7 @@ pub fn run() {
                 "main",
                 WebviewUrl::App("index.html".into()),
             )
-            .title("whisper-to-me")
+            .title("Hush")
             .inner_size(1120.0, 780.0)
             .build()?;
 

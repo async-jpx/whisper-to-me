@@ -32,7 +32,7 @@ pub fn setup(app: &App, login_item: Option<LoginItem>) -> tauri::Result<()> {
     let dismiss_meeting =
         MenuItem::with_id(app, "dismiss-meeting", "Dismiss this meeting", false, None::<&str>)?;
     let open_last = MenuItem::with_id(app, "open-last", "Open last note", false, None::<&str>)?;
-    let show = MenuItem::with_id(app, "show", "Open whisper-to-me", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Open Hush", true, None::<&str>)?;
     let login = match &login_item {
         Some(item) => {
             let on = item.is_enabled();

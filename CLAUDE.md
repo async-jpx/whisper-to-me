@@ -381,6 +381,13 @@ Key invariants:
   admin. After any signing change, run `tccutil reset ScreenCapture
   io.github.asyncjpx.whispertome` and grant the permission again. Toggling
   the switch off and on does not refresh the stored requirement.
+- **The app is displayed as "Hush"; only display strings carry that name**
+  (desktop tauri.conf.json `productName`, window/tray/notification titles,
+  web UI). The bundle identifier `io.github.asyncjpx.whispertome`, the
+  signing cert name, the `wtm` CLI, the Python package, config/log paths and
+  the cargo binary name stay `whisper-to-me`. Renaming the identifier
+  changes the designated requirement and resets TCC; confirm a rename kept
+  it with `codesign -dr - Hush.app`.
 - **Keep `hardenedRuntime: false`** (desktop tauri.conf.json). Tauri turns
   hardened runtime on whenever a signing identity is set. A hardened app
   without the `com.apple.security.device.audio-input` entitlement gets silent
