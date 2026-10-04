@@ -19,8 +19,19 @@ def test_tldr_extracts_and_collapses():
 
 
 def test_tldr_absent_falls_back_to_first_paragraph():
-    md = "# Title\n\n*Recorded Monday — whisper-to-me*\n\nSome opening paragraph.\n\n## Transcript\n"
+    md = "# Title\n\n*Recorded Monday with Hush*\n\nSome opening paragraph.\n\n## Transcript\n"
     assert briefs._tldr(md) == "Some opening paragraph."
+
+
+def test_tldr_fallback_is_plain_text():
+    md = (
+        "---\ntitle: Sync\n---\n# Sync\n\n*Recorded Monday with Hush*\n\n## Transcript\n\n"
+        "**[0:00:00]** **You:** We *really* need the **exporter** by Friday.\n"
+        "**[0:00:07]** **Others:** Agreed, `_ship_` it.\n"
+    )
+    assert briefs._tldr(md) == (
+        "You: We really need the exporter by Friday. Others: Agreed, ship it."
+    )
 
 
 def test_tldr_empty_note():

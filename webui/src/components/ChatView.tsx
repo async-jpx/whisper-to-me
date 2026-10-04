@@ -9,6 +9,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import type { ChatSource } from "../api/types";
 import { md } from "../lib/markdown";
 import { useStore } from "../store";
+import { Composer } from "./Composer";
 
 type ChatMessage = UIMessage<unknown, { sources: ChatSource[] }>;
 
@@ -32,7 +33,8 @@ export function ChatView() {
   const toast = useStore((s) => s.toast);
   const { messages, sendMessage, setMessages, status, clearError } = useChat({ chat });
   const pending = status === "submitted" || status === "streaming";
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
 
   // A failed turn is rolled back (question + any partial answer) so it is
@@ -59,11 +61,10 @@ export function ChatView() {
     }
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = inputRef.current?.value.trim() ?? "";
+  const handleSubmit = (value: string) => {
+    const q = value.trim();
     if (!q || pending) return;
-    if (inputRef.current) inputRef.current.value = "";
+    setInput("");
     void sendMessage({ text: q });
   };
 
@@ -74,9 +75,12 @@ export function ChatView() {
     <div className="chat-view">
       <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 && !thinking ? (
-          <div className="chat-hint">
-            Ask anything about your past meetings. Answers cite the notes they come from —
-            nothing leaves your machine.
+          <div className="chat-empty">
+            <h1>Ask your notes</h1>
+            <p>
+              Ask anything about your past meetings. Answers cite the notes they come from, and
+              nothing leaves your Mac.
+            </p>
           </div>
         ) : (
           messages.map((msg, i) =>
@@ -98,19 +102,19 @@ export function ChatView() {
           <div className="chat-msg chat-assistant chat-thinking">Thinking…</div>
         )}
       </div>
-      <form className="chat-form" onSubmit={handleSubmit}>
-        <input
+      <div className="chat-dock">
+        <Composer
           ref={inputRef}
-          className="chat-input"
-          type="text"
-          placeholder="Ask about your meetings…"
-          autoComplete="off"
-          disabled={pending}
+          value={input}
+          onChange={setInput}
+          onSubmit={handleSubmit}
+          placeholder="Ask about your meetings"
+          submitLabel="Send"
+          sendDisabled={pending}
+          autoFocus
         />
-        <button type="submit" className="btn btn-primary btn-sm" disabled={pending}>
-          Ask
-        </button>
-      </form>
+        <p className="chat-footnote">Answers come from a local model and can be wrong. Check the cited notes.</p>
+      </div>
     </div>
   );
 }
@@ -152,21 +156,19 @@ function SourceList({ sources }: SourceListProps) {
 
   return (
     <div className="chat-sources">
-      {sources.map((src, i) => (
-        <span key={src.n}>
-          {i > 0 && " · "}
-          <a
-            href="#"
-            className="cite"
-            title={src.title}
-            onClick={(e) => {
-              e.preventDefault();
-              openNote(src.name);
-            }}
-          >
-            {src.n}. {src.title}
-          </a>
-        </span>
+      {sources.map((src) => (
+        <a
+          key={src.n}
+          href="#"
+          className="cite"
+          title={src.title}
+          onClick={(e) => {
+            e.preventDefault();
+            void openNote(src.name);
+          }}
+        >
+          {src.n}. {src.title}
+        </a>
       ))}
     </div>
   );
@@ -175,11 +177,12 @@ function SourceList({ sources }: SourceListProps) {
 function linkifyCitations(root: HTMLElement, sources: ChatSource[]) {
   const byN = new Map(sources.map((s) => [s.n, s]));
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const nodes: Node[] = [];
+  const nodes: Text[] = [];
 
   // Skip already-linked citations so a re-run never nests <a> in <a>.
   while (walker.nextNode()) {
-    if (!walker.currentNode.parentElement?.closest("a.cite")) nodes.push(walker.currentNode);
+    const node = walker.currentNode;
+    if (node instanceof Text && !node.parentElement?.closest("a.cite")) nodes.push(node);
   }
 
   for (const node of nodes) {
@@ -212,6 +215,6 @@ function linkifyCitations(root: HTMLElement, sources: ChatSource[]) {
       frag.appendChild(a);
     });
 
-    (node as any).replaceWith(frag);
+    node.replaceWith(frag);
   }
 }

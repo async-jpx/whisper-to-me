@@ -14,7 +14,7 @@ export function FollowupModal({ draft, onClose }: FollowupModalProps) {
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(draft);
-      toast("Copied — nothing was sent anywhere.");
+      toast("Copied. Nothing was sent anywhere.");
     } catch (err) {
       toast("Could not copy to the clipboard.", "error");
     }
@@ -58,7 +58,7 @@ export function FollowupModal({ draft, onClose }: FollowupModalProps) {
           value={draft}
         />
         <div className="modal-actions">
-          <span className="modal-note">Local draft — nothing is sent anywhere.</span>
+          <span className="modal-note">Local draft. Nothing is sent anywhere.</span>
           <button className="btn btn-primary btn-sm" onClick={handleCopy}>
             Copy
           </button>

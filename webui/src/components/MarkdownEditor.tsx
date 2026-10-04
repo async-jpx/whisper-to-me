@@ -1,6 +1,6 @@
 /* The shared markdown editor (note editor + live scratchpad): CodeMirror 6
    via @uiw/react-codemirror — everything bundled locally, nothing loads from
-   the network at runtime. Colors come from legacy.css's CSS variables so the
+   the network at runtime. Colors come from app.css design tokens so the
    editor follows the app's light/dark scheme automatically. */
 
 import { forwardRef } from "react";
@@ -13,7 +13,7 @@ import { markdownKeys } from "../lib/cm";
 
 const theme = EditorView.theme({
   "&": {
-    backgroundColor: "var(--bg)",
+    backgroundColor: "transparent",
     color: "var(--text)",
     fontSize: "inherit",
     height: "100%",

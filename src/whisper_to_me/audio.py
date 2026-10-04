@@ -84,6 +84,9 @@ class Recorder:
         # source publishes its raw blocks; the mic source filters its own.
         self.block_listener = None  # called with every raw block, None at end
         self.preprocess = None      # block -> block, applied before chunking
+        # Audio retention (audio_store.AudioCapture): (capture time, block)
+        # for every block, on the same clock as the chunk timestamps.
+        self.block_tap = None
 
     @property
     def helper_pid(self) -> int | None:
@@ -151,6 +154,12 @@ class Recorder:
                 self.block_listener(block)
             if self.preprocess is not None:
                 block = self.preprocess(block)
+            if self.block_tap is not None:
+                if self.epoch is not None:
+                    at = self.epoch + timedelta(seconds=(blocks_seen - 1) * BLOCK_SECONDS)
+                else:
+                    at = datetime.now()
+                self.block_tap(at, block)
 
             rms = float(np.sqrt(np.mean(block**2)))
             self.peak_level = rms

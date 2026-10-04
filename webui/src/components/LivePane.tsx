@@ -100,7 +100,7 @@ export function LivePane() {
           <div className="brief-card">
             <div className="brief-head">
               <Icon name="clipboard" />
-              <span>Last time — </span>
+              <span>Last time</span>
               <strong>{brief.title}</strong>
               <button
                 className="brief-dismiss"
@@ -141,17 +141,22 @@ export function LivePane() {
             </div>
           ),
         )}
+        {transcript.length === 0 && (
+          <p className="t-empty">Listening. Lines appear here as people speak.</p>
+        )}
       </div>
       <div className="scratchpad">
-        <div className="scratchpad-label">Your notes shape the summary</div>
-        <EditorToolbar target={cmRef} />
-        <MarkdownEditor
-          ref={cmRef}
-          className="scratchpad-editor"
-          value={scratchpad}
-          onChange={handleScratchpadChange}
-          placeholder="Type your own notes here — each point is expanded in the final summary…"
-        />
+        <div className="scratchpad-label">Your notes</div>
+        <div className="scratchpad-frame">
+          <MarkdownEditor
+            ref={cmRef}
+            className="scratchpad-editor"
+            value={scratchpad}
+            onChange={handleScratchpadChange}
+            placeholder="Jot down what matters. Each point is expanded in the summary."
+          />
+          <EditorToolbar target={cmRef} />
+        </div>
       </div>
     </div>
   );

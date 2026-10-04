@@ -341,7 +341,7 @@ fn handle_event(app: &AppHandle, evt: &Value) {
         }
         Some("error") => {
             let msg = evt.get("message").and_then(Value::as_str).unwrap_or("error");
-            notify(app, "whisper-to-me", msg);
+            notify(app, "Hush", msg);
         }
         _ => {}
     }

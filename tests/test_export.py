@@ -11,7 +11,7 @@ from whisper_to_me.export import copy_to_vault, export_obsidian, note_date, vaul
 LEGACY = """\
 # Sprint Planning
 
-*Recorded Thursday 02 July 2026, 15:18 — whisper-to-me*
+*Recorded Thursday 02 July 2026, 15:18 with Hush*
 
 ## Transcript
 

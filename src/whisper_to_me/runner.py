@@ -33,6 +33,7 @@ class Prompt:
     real_title: bool
     template: str | None
     deadline: float
+    app: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class SessionPlan:
     find_brief: bool
     trigger: Trigger | None = None
     simulate: SimulateSource | None = None
+    app: str | None = None  # meeting app display name, for the note's frontmatter
 
     @property
     def stoppable(self) -> bool:
@@ -113,13 +115,14 @@ def open_prompt(
     now: float,
     wall_now: datetime,
     timeout_s: float = PROMPT_TIMEOUT_S,
+    app: str | None = None,
 ) -> State:
     if state != Idle():
         return state
     title = hint or (
         f"{'Zoom meeting' if trigger == 'zoom' else 'Meeting'} {wall_now:%d %b %H:%M}"
     )
-    template = default_template or templates.suggest_template(hint)
+    template = templates.resolve_template(default_template, hint)
     return Prompting(
         Prompt(
             id=prompt_id,
@@ -128,6 +131,7 @@ def open_prompt(
             real_title=hint is not None,
             template=template,
             deadline=now + timeout_s,
+            app=app,
         )
     )
 
@@ -180,13 +184,16 @@ def session_ended(state: State) -> State:
     return Idle(sitting_out=True)
 
 
-def manual_plan(title: str | None, template: str | None, now: datetime) -> SessionPlan:
+def manual_plan(
+    title: str | None, template: str | None, now: datetime, app: str | None = None
+) -> SessionPlan:
     return SessionPlan(
         origin="manual",
         title=title or f"Meeting {now:%d %b %H:%M}",
         template=template,
         auto_title=title is None,
         find_brief=bool(title),
+        app=app,
     )
 
 
@@ -198,6 +205,7 @@ def detected_plan(prompt: Prompt) -> SessionPlan:
         auto_title=not prompt.real_title,
         find_brief=prompt.real_title,
         trigger=prompt.trigger,
+        app=prompt.app,
     )
 
 

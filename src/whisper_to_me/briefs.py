@@ -10,10 +10,20 @@ from pathlib import Path
 
 from . import notes, search
 
+_STAMP_RE = re.compile(r"\*\*\[\d+:\d{2}(?::\d{2})?\]\*\*")
+_EMPHASIS_RE = re.compile(r"[*`]|(?<!\w)_+|_+(?!\w)")
+
+
+def _plain(text: str) -> str:
+    """Markdown → the plain text a brief displays: no transcript stamps, no
+    emphasis/code markers (the UI shows the brief as text, not markdown)."""
+    return _EMPHASIS_RE.sub("", _STAMP_RE.sub("", text))
+
 
 def _tldr(md: str) -> str:
-    """The note's TL;DR, whitespace-collapsed and clamped; falling back to the
-    first real paragraph after the H1, or "" when neither exists."""
+    """The note's TL;DR as plain text, whitespace-collapsed and clamped;
+    falling back to the first real paragraph after the H1 (for a note without
+    a summary, its first transcript lines), or "" when neither exists."""
     _, body = notes.split_frontmatter(md)
     m = re.search(r"^##\s+TL;DR\s*$", body, flags=re.MULTILINE)
     if m:
@@ -28,7 +38,7 @@ def _tldr(md: str) -> str:
                 continue
             text = p
             break
-    return " ".join(text.split())[:400]
+    return " ".join(_plain(text).split())[:400]
 
 
 def find_brief(notes_dir: Path, title: str, exclude: str | None = None) -> dict | None:

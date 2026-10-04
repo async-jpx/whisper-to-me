@@ -7,9 +7,27 @@
 import { create } from "zustand";
 import { api } from "./api/client";
 import { IDLE_STATUS, isActive } from "./api/types";
-import type { NoteMeta, SearchHit, Status, Template } from "./api/types";
+import type { NoteMeta, SearchResult, Status, Template } from "./api/types";
 
-export type View = "empty" | "transcript" | "note" | "chat";
+/* The page shown in the main pane. "note" pairs with currentNote; every
+   other view has currentNote === null. */
+export type View = "home" | "live" | "note" | "chat" | "templates" | "settings";
+
+/* The open note's two tabs. The rendered summary and the transcript stay
+   mounted across switches, so playback and scroll survive a tab change. */
+export type NoteTab = "summary" | "transcript";
+
+/* Where openNote lands. Only the transcript has a timeline, so only it takes
+   a second. */
+export type NoteFocus = { tab: "summary" } | { tab: "transcript"; t?: number };
+
+/* A request for the transcript tab to show second `t`: scroll to and
+   highlight the line at or just before it, and cue the player there (never
+   autoplay). `seq` makes asking for the same second twice a new request. */
+export interface TranscriptCue {
+  t: number;
+  seq: number;
+}
 
 export interface TranscriptLine {
   kind: "line";
@@ -44,6 +62,7 @@ interface ConfirmRequest {
 }
 
 let toastSeq = 0;
+let cueSeq = 0;
 
 export interface AppState {
   // -- daemon status (WS-authoritative) ---------------------------------
@@ -64,15 +83,21 @@ export interface AppState {
      currentNoteMd WITHOUT bumping it — re-rendering there would collapse the
      transcript fold and reset scroll. */
   noteRenderSeq: number;
+  noteTab: NoteTab;
+  transcriptCue: TranscriptCue | null;
   /* The editor's current text while editing; null otherwise. Lets the store's
      dirty-guard see unsaved edits without owning the textarea. */
   editorDraft: string | null;
   viewArchived: boolean;
+  /* Narrow windows only: the sidebar is an off-canvas drawer. */
+  drawerOpen: boolean;
   // -- data caches ---------------------------------------------------------
   notes: NoteMeta[];
   archived: NoteMeta[];
-  searchResults: SearchHit[] | null; // null = no active search
+  searchResults: SearchResult[] | null; // null = no active search
   templates: Template[];
+  /* The user's configured default template (Settings), null = none. */
+  defaultTemplate: string | null;
   // -- shared UI -------------------------------------------------------------
   toasts: Toast[];
   confirm: ConfirmRequest | null;
@@ -94,9 +119,14 @@ export interface AppState {
   setScratchpad(content: string): void;
   syncScratchpad(): Promise<void>;
 
-  setView(view: View): void;
+  /* Leaves the open note (guarding unsaved edits) for a non-note view. */
+  navigate(view: Exclude<View, "note">): Promise<void>;
+  setDrawerOpen(open: boolean): void;
   openLive(): void;
-  openNote(name: string): Promise<void>;
+  openNote(name: string, focus?: NoteFocus): Promise<void>;
+  setNoteTab(tab: NoteTab): void;
+  /* Switches the open note to its transcript at second `t`. */
+  cueTranscript(t: number): void;
   forgetOpenNote(name: string): void;
   setEditing(editing: boolean, draft?: string | null): void;
   setEditorDraft(draft: string): void;
@@ -107,10 +137,8 @@ export interface AppState {
   refreshNotes(): Promise<void>;
   refreshArchived(): Promise<void>;
   setSidebarTab(archived: boolean): void;
-  setSearchResults(results: SearchHit[] | null): void;
+  setSearchResults(results: SearchResult[] | null): void;
   loadTemplates(): Promise<void>;
-
-  openChat(): void;
 }
 
 export const useStore = create<AppState>()((set, get) => ({
@@ -120,17 +148,21 @@ export const useStore = create<AppState>()((set, get) => ({
   transcript: [],
   brief: null,
   scratchpad: "",
-  view: "empty",
+  view: "home",
   currentNote: null,
   currentNoteMd: null,
   editing: false,
   noteRenderSeq: 0,
+  noteTab: "summary",
+  transcriptCue: null,
   editorDraft: null,
   viewArchived: false,
+  drawerOpen: false,
   notes: [],
   archived: [],
   searchResults: null,
   templates: [],
+  defaultTemplate: null,
   toasts: [],
   confirm: null,
 
@@ -164,8 +196,8 @@ export const useStore = create<AppState>()((set, get) => ({
       scratchpad: fresh ? "" : s.scratchpad,
     }));
     const { view, currentNote } = get();
-    if (view === "empty" && isActive(status) && currentNote === null) {
-      set({ view: "transcript" });
+    if (view === "home" && isActive(status) && currentNote === null) {
+      set({ view: "live" });
     }
   },
   setDaemonUp(up) {
@@ -200,13 +232,29 @@ export const useStore = create<AppState>()((set, get) => ({
     }
   },
 
-  setView(view) {
-    set({ view });
+  async navigate(view) {
+    const s = get();
+    if (s.editorDirty() && !(await s.confirmDialog("Discard your unsaved edits?"))) {
+      return;
+    }
+    set({
+      view,
+      currentNote: null,
+      currentNoteMd: null,
+      noteTab: "summary",
+      transcriptCue: null,
+      editing: false,
+      editorDraft: null,
+      drawerOpen: false,
+    });
+  },
+  setDrawerOpen(open) {
+    set({ drawerOpen: open });
   },
   openLive() {
-    set({ currentNote: null, view: "transcript" });
+    void get().navigate("live");
   },
-  async openNote(name) {
+  async openNote(name, focus = { tab: "summary" }) {
     const s = get();
     if (s.editorDirty() && !(await s.confirmDialog("Discard your unsaved edits?"))) {
       return;
@@ -216,22 +264,36 @@ export const useStore = create<AppState>()((set, get) => ({
       set({
         currentNote: name,
         currentNoteMd: mdText,
+        noteTab: focus.tab,
+        transcriptCue:
+          focus.tab === "transcript" && focus.t !== undefined
+            ? { t: focus.t, seq: ++cueSeq }
+            : null,
         editing: false,
         editorDraft: null,
         view: "note",
+        drawerOpen: false,
       });
     } catch {
       get().toast("Could not load that note.", "error");
     }
+  },
+  setNoteTab(tab) {
+    set({ noteTab: tab });
+  },
+  cueTranscript(t) {
+    set({ noteTab: "transcript", transcriptCue: { t, seq: ++cueSeq } });
   },
   forgetOpenNote(name) {
     if (get().currentNote !== name) return;
     set({
       currentNote: null,
       currentNoteMd: null,
+      noteTab: "summary",
+      transcriptCue: null,
       editing: false,
       editorDraft: null,
-      view: "empty",
+      view: "home",
     });
   },
   setEditing(editing, draft = null) {
@@ -291,13 +353,10 @@ export const useStore = create<AppState>()((set, get) => ({
   },
   async loadTemplates() {
     try {
-      set({ templates: await api.templates() });
+      const [templates, settings] = await Promise.all([api.templates(), api.settings()]);
+      set({ templates, defaultTemplate: settings.templates.default });
     } catch {
       /* non-critical: the Auto option alone still works */
     }
-  },
-
-  openChat() {
-    set({ currentNote: null, view: "chat" });
   },
 }));

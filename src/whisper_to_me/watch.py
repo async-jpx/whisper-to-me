@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import ctypes
 import os
+import plistlib
 import struct
 import subprocess
 from ctypes import byref, c_int32, c_uint32, sizeof
+from pathlib import Path
 
 _coreaudio = ctypes.CDLL(
     "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
@@ -92,31 +94,82 @@ def _get_pid_property(object_id: int, selector: str) -> int | None:
     return value.value if status == 0 else None
 
 
-def mic_in_use_by_others(exclude_pids: frozenset[int] | set[int] = frozenset()) -> bool | None:
-    """True if a process other than us still runs audio *input* — i.e. the
-    call app still holds the microphone. This is the meeting-end signal that
-    keeps working while our own recorder has the input device open (which
-    makes the device-level `mic_in_use` permanently True for the session).
-
-    Uses the macOS 14+ per-process audio objects
-    (kAudioHardwarePropertyProcessObjectList 'prs#',
-    kAudioProcessPropertyPID 'ppid', kAudioProcessPropertyIsRunningInput
-    'piri'). Returns None when the API is unavailable (older macOS) or errors
-    — callers must then fall back to the silence timeout. `exclude_pids`
-    names our own helper children (the system-audio tap) on top of this
-    process, which must never count as "someone else on the mic"."""
+def _other_input_pids(exclude_pids: frozenset[int] | set[int]) -> list[int] | None:
+    """PIDs of processes other than us (and `exclude_pids`) running audio
+    input, via the macOS 14+ per-process audio objects
+    (kAudioHardwarePropertyProcessObjectList 'prs#', kAudioProcessPropertyPID
+    'ppid', kAudioProcessPropertyIsRunningInput 'piri'). None when the API is
+    unavailable (older macOS) or errors."""
     processes = _get_object_list(_SYSTEM_OBJECT, "prs#")  # ...ProcessObjectList
     if processes is None:
         return None
     own = {os.getpid(), *exclude_pids}
+    pids = []
     for proc_obj in processes:
         running = _get_u32_property(proc_obj, "piri")  # ...IsRunningInput
         if not running:
             continue
         pid = _get_pid_property(proc_obj, "ppid")  # ...PropertyPID
         if pid is not None and pid not in own:
-            return True
-    return False
+            pids.append(pid)
+    return pids
+
+
+def mic_in_use_by_others(exclude_pids: frozenset[int] | set[int] = frozenset()) -> bool | None:
+    """True if a process other than us still runs audio *input* — i.e. the
+    call app still holds the microphone. This is the meeting-end signal that
+    keeps working while our own recorder has the input device open (which
+    makes the device-level `mic_in_use` permanently True for the session).
+
+    Returns None when the per-process API is unavailable or errors — callers
+    must then fall back to the silence timeout. `exclude_pids` names our own
+    helper children (the system-audio tap) on top of this process, which must
+    never count as "someone else on the mic"."""
+    pids = _other_input_pids(exclude_pids)
+    return None if pids is None else bool(pids)
+
+
+# Bundle names that read badly as a meeting-app label.
+_APP_ALIASES = {"zoom.us": "Zoom"}
+
+
+def app_name_for_pid(pid: int) -> str | None:
+    """Display name of the app bundle a process belongs to — the outermost
+    `.app` in its executable path, so a browser's nested helper reports the
+    browser. None for processes outside an app bundle."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    exe = out.stdout.strip()
+    idx = exe.find(".app/")
+    if out.returncode != 0 or idx == -1:
+        return None
+    bundle = Path(exe[: idx + 4])
+    name = None
+    try:
+        with (bundle / "Contents" / "Info.plist").open("rb") as fh:
+            info = plistlib.load(fh)
+        name = info.get("CFBundleDisplayName") or info.get("CFBundleName")
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        pass
+    if not isinstance(name, str) or not name.strip():
+        name = bundle.stem
+    return _APP_ALIASES.get(name.strip(), name.strip())
+
+
+def mic_app_name(exclude_pids: frozenset[int] | set[int] = frozenset()) -> str | None:
+    """The app (other than us) currently holding the microphone, if any."""
+    for pid in _other_input_pids(exclude_pids) or []:
+        name = app_name_for_pid(pid)
+        if name:
+            return name
+    return None
 
 
 def zoom_meeting_active() -> bool:

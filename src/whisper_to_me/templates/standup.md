@@ -1,6 +1,7 @@
 ---
 name: standup
-description: "Daily standup — per-person updates and blockers"
+title: "Daily standup"
+description: "Per-person updates and blockers"
 match: [standup, stand-up, daily, scrum, sprint sync]
 ---
 ## TL;DR

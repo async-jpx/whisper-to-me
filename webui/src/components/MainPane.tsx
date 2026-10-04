@@ -1,54 +1,51 @@
-/* Main content area: session bar + the active view. Each pane lives in its
-   own file (one work package per file — don't fold them back in here). */
+/* Main content area: top bar + the active view. Each view lives in its own
+   file; add a view by extending store.View and the switch below. */
 
 import { lazy, Suspense } from "react";
-import { useStore } from "../store";
-import { canStartRecording } from "../api/types";
+import { useStore, type View } from "../store";
+import { HomeView } from "./HomeView";
 import { LivePane } from "./LivePane";
 import { NoteContainer } from "./NoteContainer";
-import { SessionBar } from "./SessionBar";
+import { SettingsPage } from "./SettingsPage";
+import { TemplatesPage } from "./TemplatesPage";
+import { TopBar } from "./TopBar";
 
 // The AI SDK only loads when the Ask view first opens (keeps it out of the
 // main bundle).
 const ChatView = lazy(() => import("./ChatView").then((m) => ({ default: m.ChatView })));
 
-function EmptyState() {
-  const status = useStore((s) => s.status);
-  return (
-    <div className="empty-state">
-      <p className="empty-title">Ready when you are</p>
-      <p>
-        Start a new meeting to record and transcribe it live —<br />
-        everything stays on this machine.
-      </p>
-      <button
-        id="empty-record-btn"
-        className="btn btn-primary btn-lg"
-        disabled={!canStartRecording(status)}
-        onClick={() => document.getElementById("record-btn")?.click()}
-      >
-        <span className="rec-glyph" aria-hidden="true"></span>
-        <span>Start a new meeting</span>
-      </button>
-      <p className="empty-hint">…or pick a past meeting from the sidebar.</p>
-    </div>
-  );
+function ViewBody({ view }: { view: View }) {
+  switch (view) {
+    case "home":
+      return <HomeView />;
+    case "live":
+      return <LivePane />;
+    case "note":
+      return <NoteContainer />;
+    case "chat":
+      return (
+        <Suspense fallback={null}>
+          <ChatView />
+        </Suspense>
+      );
+    case "templates":
+      return <TemplatesPage />;
+    case "settings":
+      return <SettingsPage />;
+    default: {
+      const _exhaustive: never = view;
+      return _exhaustive;
+    }
+  }
 }
 
 export function MainPane() {
   const view = useStore((s) => s.view);
   return (
     <main className="main">
-      <SessionBar />
-      <div className="content">
-        {view === "empty" && <EmptyState />}
-        {view === "transcript" && <LivePane />}
-        {view === "note" && <NoteContainer />}
-        {view === "chat" && (
-          <Suspense fallback={null}>
-            <ChatView />
-          </Suspense>
-        )}
+      <TopBar />
+      <div className={"content content-" + view}>
+        <ViewBody view={view} />
       </div>
     </main>
   );

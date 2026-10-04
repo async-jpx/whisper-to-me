@@ -84,7 +84,12 @@ summarize.py   Ollama pipeline: windowed JSON fact extraction (structured
 templates.py   meeting templates (default/one-on-one/standup/interview/
                sales-call/brainstorm) as templates/*.md + user overrides in
                ~/.config/whisper-to-me/templates/; suggest_template() matches by
-               title; every template must keep a "## Action Items" + "- [ ]"
+               title; every template must keep a "## Action Items" + "- [ ]";
+               the UI creates/deletes user templates (built-ins are read-only)
+               and sets [templates] favorites/default in config.toml;
+               resolve_template = explicit > configured default >
+               suggest_template > None (built-in default), applied in
+               runner.open_prompt and session.summarize_and_save
 chat.py        local RAG (Phase 4.3): FTS5 retrieve (OR-match) → summary +
                term-matching transcript lines as numbered sources → one _chat
                call with [n] citations; sources filtered to those actually
@@ -102,8 +107,16 @@ diarize.py     speaker diarization within "Others" (beta, opt-in `--diarize` +
                the extra is missing or a cluster is unconfident
 notes.py       markdown notes in ~/MeetingNotes; live journal + final rewrite;
                YAML frontmatter (title/date/attendees/tags) on saved notes
+audio_store.py opt-in kept audio ([recording] keep_audio): each source's
+               block_tap streams int16 into its own temp file placed by
+               capture time (late/stalled tap = silent gap), mixed at stop
+               → afconvert AAC `<note dir>/.wtm-audio/<stem>.m4a` +
+               .peaks.json; follows the note (inferred-title move, archive,
+               restore, delete); temp dirs carry the pid so only a dead
+               process's are cleaned; unplayed 30 days (mtime) → purged
 config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
-               [obsidian] vault, [notion] token+database_id); read fresh per
+               [obsidian] vault, [notion] token+database_id, [templates]
+               default+favorites); read fresh per
                use — no restart needed after edits; save_config writes it back
                for the UI's Settings → Connections (local disk, chmod 600, no
                network — connecting is never a token-verification call)
@@ -139,25 +152,36 @@ server.py      FastAPI daemon (127.0.0.1 only): REST + /api/events WebSocket
                POST /api/chat/stream streams chat answers as SSE in the AI SDK
                UI-message-stream protocol (text-delta events + a data-sources
                part), still 127.0.0.1→local Ollama only
-search.py      SQLite FTS5 index over notes for GET /api/search; search_notes
-               has match_all (AND, sidebar default) vs OR (chat/briefs) mode
+search.py      SQLite FTS5 index over notes (a cache: PRAGMA user_version =
+               SCHEMA_VERSION, mismatch → drop + rebuild); notes_fts (one row
+               per note) matches/ranks — search_notes has match_all (AND,
+               sidebar default) vs OR (chat/briefs) mode, bm25 (title ×5) ×
+               recency; hits_fts (title/summary/one row per transcript line
+               with t seconds + speaker) feeds search() = GET /api/search,
+               ≤3 hits per note so the UI can seek to the second
 webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
                Vite + Zustand, all deps bundled locally (no CDN, no runtime
-               network). src/legacy.css is the original stylesheet (minus
-               rules for deleted UI) —
-               components reuse its class names for pixel parity; Tailwind
-               utilities (no preflight — it would fight legacy.css) layer on
-               top via @theme tokens. store.ts + ws.ts are the WS-authoritative
+               network). Displayed as "Hush". src/app.css holds the design
+               tokens (:root light + prefers-color-scheme dark: --bg,
+               --surface, --text*, --accent #2383e2/#4dabf7, radii, shadows)
+               and component classes; Tailwind utilities (no preflight)
+               layer on top via @theme tokens (bg-surface, text-accent…).
+               store.View routes the main pane (home | live | note | chat |
+               templates | settings); navigate() guards unsaved edits and
+               closes the narrow-window drawer. <Composer> is the one text
+               input (Enter sends, Shift+Enter newline). store.ts + ws.ts are the WS-authoritative
                status model (backoff reconnect, resync-on-focus, recordPending
                5s failsafe); api/types.ts `Status` is a union mirroring
                status_wire (idle | prompting+prompt | session phase+origin);
                only Active phases switch to the live view or show "Live
                session". The web UI never answers prompts — the status line
-               just says "Meeting detected — …" and New meeting stays enabled
+               just says "Meeting detected: …" and New meeting stays enabled
                (it supersedes the prompt); the overlay and tray answer.
                Components cover #note= deep links, live
-               scratchpad, template picker, chat view, briefs, Settings →
-               Connections, export menu (incl. the confirmed Notion push).
+               scratchpad, template picker, chat view, briefs, the Settings
+               page (General: keep recordings; Connections), sidebar notes
+               grouped by day or app (lib/noteGroups.ts, choice in
+               localStorage), export menu (incl. the confirmed Notion push).
                Editors are CodeMirror 6
                (MarkdownEditor.tsx + lib/cm.ts commands); the chat view runs
                on @ai-sdk/react useChat (module-level Chat instance keeps the
@@ -263,11 +287,13 @@ Key invariants:
   `input.task-list-item-checkbox` in DOM order PATCHes the nth task line —
   it only holds because markdown-it-task-lists' exact output matches the
   server's `_TASK_RE`. Don't "React-ify" the rendered note: the article is
-  filled imperatively (innerHTML + foldTranscript/anchorStamps) and is
+  filled imperatively (innerHTML + hideNonSummary/linkStamps) and is
   deliberately NOT subscribed to `currentNoteMd` — a checkbox toggle
-  refetches the markdown, and re-rendering there collapses the transcript
-  fold and resets scroll. Re-renders happen only on note open
-  (`currentNote`) and save (`noteRenderSeq`).
+  refetches the markdown, and re-rendering there resets scroll. Re-renders
+  happen only on note open (`currentNote`) and save (`noteRenderSeq`). The
+  Summary tab *hides* the H1, the "Recorded …" line and the `## Transcript`
+  section (the Transcript tab shows them from GET …/transcript); it must
+  never remove them from the DOM, or a checkbox below them shifts index.
 - **The webui editor keymap needs `Prec.high`** (lib/cm.ts): the editors are
   CodeMirror 6 (`<MarkdownEditor>`, note editor + scratchpad — CM's native
   history replaced the old execCommand hack). @uiw/react-codemirror registers
@@ -355,6 +381,13 @@ Key invariants:
   admin. After any signing change, run `tccutil reset ScreenCapture
   io.github.asyncjpx.whispertome` and grant the permission again. Toggling
   the switch off and on does not refresh the stored requirement.
+- **The app is displayed as "Hush"; only display strings carry that name**
+  (desktop tauri.conf.json `productName`, window/tray/notification titles,
+  web UI). The bundle identifier `io.github.asyncjpx.whispertome`, the
+  signing cert name, the `wtm` CLI, the Python package, config/log paths and
+  the cargo binary name stay `whisper-to-me`. Renaming the identifier
+  changes the designated requirement and resets TCC; confirm a rename kept
+  it with `codesign -dr - Hush.app`.
 - **Keep `hardenedRuntime: false`** (desktop tauri.conf.json). Tauri turns
   hardened runtime on whenever a signing identity is set. A hardened app
   without the `com.apple.security.device.audio-input` entitlement gets silent

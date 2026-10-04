@@ -1,6 +1,7 @@
 ---
 name: interview
-description: "Interview — candidate signal, strengths, concerns"
+title: "Interview"
+description: "Candidate signal, strengths, concerns"
 match: [interview, candidate, screening, hiring]
 ---
 ## TL;DR

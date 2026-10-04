@@ -22,21 +22,22 @@ import secrets
 import threading
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import audio_store
 from . import briefs, chat, export, followup, notes, notion_export, runner, search, templates
 from . import summarize as summ
 from . import watch
-from .config import load_config, save_config
+from .config import Config, load_config, save_config
 from .runner import Active, Idle, Prompting, Refused, State
 from .session import (
     console,
@@ -54,6 +55,9 @@ STATIC_DIR = Path(__file__).with_name("static")
 # has >1 source — the contract wants speaker=null when it doesn't, while the
 # CLI keeps printing the speaker either way.
 _WIRE_EXCLUDE = {"summary", "label"}
+
+# How often the daemon purges recordings nobody played for 30 days.
+AUDIO_PURGE_INTERVAL_S = 3600.0
 
 
 @dataclass
@@ -97,6 +101,8 @@ class MeetingProbe(Protocol):
 
     def title_hint(self, trigger: runner.Trigger) -> str | None: ...
 
+    def meeting_app(self, trigger: runner.Trigger | None) -> str | None: ...
+
 
 class SystemProbe:
     def detect(self) -> runner.Trigger | None:
@@ -104,6 +110,11 @@ class SystemProbe:
 
     def title_hint(self, trigger: runner.Trigger) -> str | None:
         return watch.meeting_title_hint(trigger)
+
+    def meeting_app(self, trigger: runner.Trigger | None) -> str | None:
+        if trigger is None:  # manual start: whoever holds the mic may be dictation
+            return "Zoom" if watch.zoom_meeting_active() else None
+        return "Zoom" if trigger == "zoom" else watch.mic_app_name()
 
 
 def status_wire(state: State, now_mono: float, now: datetime, timeout_s: float) -> dict:
@@ -144,6 +155,7 @@ class SessionManager:
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._detector: threading.Thread | None = None
+        self._audio_janitor: threading.Thread | None = None
         self._session_thread: threading.Thread | None = None
         self._transcriber = None
         self._transcriber_lock = threading.Lock()
@@ -257,12 +269,30 @@ class SessionManager:
         if self._detector is None:
             self._detector = threading.Thread(target=self._detect_loop, daemon=True)
             self._detector.start()
+        if self._audio_janitor is None:
+            self._audio_janitor = threading.Thread(target=self._audio_janitor_loop, daemon=True)
+            self._audio_janitor.start()
+
+    def _audio_janitor_loop(self) -> None:
+        """Startup + hourly: drop temp tracks of crashed sessions and kept
+        recordings nobody played for audio_store.UNPLAYED_DAYS."""
+        notes_dir = self.opts.notes_dir
+        while True:
+            try:
+                audio_store.clean_temp(notes_dir)
+                audio_store.purge_unplayed([notes_dir, notes.archive_dir(notes_dir)])
+            except OSError as exc:
+                console.print(f"[red]Audio cleanup failed: {exc}[/red]")
+            if self._closing.wait(AUDIO_PURGE_INTERVAL_S):
+                return
 
     def close(self) -> None:
         self._closing.set()
         self._wake.set()
         if self._detector is not None:
             self._detector.join()
+        if self._audio_janitor is not None:
+            self._audio_janitor.join()
         result = self._transition(runner.stop)
         if isinstance(result, Active):
             result.stop.set()
@@ -297,11 +327,12 @@ class SessionManager:
         # The calendar osascript can take seconds: fetch it outside the lock,
         # then open the prompt only if nothing else happened meanwhile.
         hint = self._probe.title_hint(verdict.trigger)
+        app = self._probe.meeting_app(verdict.trigger)
         prompt_id = secrets.token_hex(6)
         opened = self._transition(
             lambda s: runner.open_prompt(
                 s, prompt_id, verdict.trigger, hint, self.opts.template,
-                time.monotonic(), datetime.now(), self.opts.prompt_timeout,
+                time.monotonic(), datetime.now(), self.opts.prompt_timeout, app=app,
             )
         )
         if isinstance(opened, Prompting) and opened.prompt.id == prompt_id:
@@ -309,7 +340,8 @@ class SessionManager:
 
     def start_record(self, title: str | None, template: str | None = None) -> None:
         now = datetime.now()
-        plan = runner.manual_plan(title, template or self.opts.template, now)
+        app = self._probe.meeting_app(None)
+        plan = runner.manual_plan(title, template or self.opts.template, now, app=app)
         self._start(plan, now)
 
     def start_simulate(
@@ -362,6 +394,7 @@ class SessionManager:
     def _run(self, active: Active) -> None:
         plan, opts = active.plan, self.opts
         transcriber = self._get_transcriber()
+        keep_audio = load_config().keep_audio
         if plan.simulate is not None:
             transcript_lines, started = simulate_session(
                 transcriber,
@@ -373,6 +406,7 @@ class SessionManager:
                 use_aec=opts.use_aec,
                 diarize=opts.diarize,
                 events=self._sink,
+                keep_audio=keep_audio,
             )
         else:
             should_stop = (
@@ -393,6 +427,7 @@ class SessionManager:
                 started=active.started,
                 events=self._sink,
                 stop_event=active.stop,
+                keep_audio=keep_audio,
             )
         self._transition(runner.summarizing)
         summarize_and_save(
@@ -407,6 +442,7 @@ class SessionManager:
             user_notes=self.get_scratchpad(),
             template=plan.template,
             events=self._sink,
+            app=plan.app,
         )
         self._clear_scratchpad()
 
@@ -438,6 +474,20 @@ class SimulateBody(BaseModel):
 
 class ScratchpadBody(BaseModel):
     content: str
+
+
+class TemplateCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    body: str
+
+
+class TemplateFavoriteBody(BaseModel):
+    favorite: bool
+
+
+class DefaultTemplateBody(BaseModel):
+    name: str | None
 
 
 class ChatBody(BaseModel):
@@ -476,23 +526,35 @@ class ObsidianSettingsBody(BaseModel):
     vault: str
 
 
+class RecordingSettingsBody(BaseModel):
+    keep_audio: bool
+
+
 class NotionSettingsBody(BaseModel):
     # token omitted/blank keeps an already-saved one (the UI never re-sends it).
     token: str | None = None
     database_id: str
 
 
+def _note_meta(path: Path) -> dict:
+    """One NoteMeta (see the web UI's api/types.ts)."""
+    text = path.read_text(encoding="utf-8")
+    lines = notes.parse_transcript(text)
+    return {
+        "name": path.name,
+        "title": notes.note_title(path),
+        "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+        "date": notes.meeting_date(text),
+        "app": notes.frontmatter_fields(text).get("app") or None,
+        "has_audio": audio_store.has_audio(path),
+        "duration_s": lines[-1].t if lines else None,
+    }
+
+
 def _list_notes(notes_dir: Path) -> list[dict]:
     if not notes_dir.is_dir():
         return []
-    entries = [
-        {
-            "name": path.name,
-            "title": notes.note_title(path),
-            "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
-        }
-        for path in notes_dir.glob("*.md")
-    ]
+    entries = [_note_meta(path) for path in notes_dir.glob("*.md")]
     entries.sort(key=lambda e: e["modified"], reverse=True)
     return entries
 
@@ -501,14 +563,7 @@ def _list_archived(notes_dir: Path) -> list[dict]:
     archive = notes.archive_dir(notes_dir)
     if not archive.is_dir():
         return []
-    entries = [
-        {
-            "name": path.name,
-            "title": notes.note_title(path),
-            "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
-        }
-        for path in archive.glob("*.md")
-    ]
+    entries = [_note_meta(path) for path in archive.glob("*.md")]
     entries.sort(key=lambda e: e["modified"], reverse=True)
     return entries
 
@@ -580,12 +635,51 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
         if name is not None and templates.load_template(name) is None:
             raise HTTPException(status_code=400, detail=f"unknown template: {name}")
 
+    def _template_dto(t: templates.Template, cfg: Config) -> dict:
+        default = cfg.default_template
+        if default is None or templates.load_template(default) is None:
+            default = "default"
+        return {
+            "name": t.name,
+            "title": t.title,
+            "description": t.description,
+            "builtin": t.builtin,
+            "favorite": t.name in cfg.favorite_templates,
+            "is_default": t.name == default,
+            "body": t.sections,
+        }
+
     @app.get("/api/templates")
     def list_templates_endpoint():
-        return [
-            {"name": t.name, "description": t.description, "builtin": t.builtin}
-            for t in templates.list_templates()
-        ]
+        cfg = load_config()
+        return [_template_dto(t, cfg) for t in templates.list_templates()]
+
+    @app.post("/api/templates", status_code=201)
+    def create_template_endpoint(body: TemplateCreateBody):
+        try:
+            created = templates.create_template(body.name, body.description, body.body)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _template_dto(created, load_config())
+
+    @app.delete("/api/templates/{name}", status_code=204)
+    def delete_template_endpoint(name: str):
+        try:
+            templates.delete_template(name)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown template: {name}") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.put("/api/templates/{name}/favorite")
+    def favorite_template_endpoint(name: str, body: TemplateFavoriteBody):
+        try:
+            templates.set_favorite(name, body.favorite)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown template: {name}") from exc
+        return _template_dto(templates.load_template(name), load_config())
 
     @app.post("/api/record/start", status_code=202)
     def record_start(body: RecordStartBody = RecordStartBody()):
@@ -686,7 +780,7 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
         # Same live-journal guard as the write endpoints: never delete the note
         # a session is still appending transcript lines to.
         path = _writable_note_path(name)
-        path.unlink()
+        notes.delete_note(path)
         return {"ok": True}
 
     @app.post("/api/notes/{name}/archive")
@@ -713,12 +807,50 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
 
     @app.delete("/api/archived/{name}")
     def delete_archived(name: str):
-        _archived_path(name).unlink()
+        notes.delete_note(_archived_path(name))
         return {"ok": True}
+
+    @app.get("/api/notes/{name}/transcript")
+    def get_transcript(name: str):
+        path = _safe_note_path(opts.notes_dir, name)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="note not found")
+        lines = notes.parse_transcript(path.read_text(encoding="utf-8"))
+        return {"lines": [asdict(line) for line in lines]}
+
+    def _note_audio(name: str) -> Path:
+        """The note's path, 404 unless it has a kept recording."""
+        path = _safe_note_path(opts.notes_dir, name)
+        if path is None or not audio_store.has_audio(path):
+            raise HTTPException(status_code=404, detail="no audio")
+        return path
+
+    @app.get("/api/notes/{name}/audio")
+    def get_audio(name: str):
+        # FileResponse answers Range requests with 206; WebKit's <audio>
+        # won't play or seek a source that can't.
+        path = _note_audio(name)
+        audio_store.mark_played(path)
+        return FileResponse(audio_store.audio_path(path), media_type="audio/mp4")
+
+    @app.get("/api/notes/{name}/audio/peaks")
+    def get_audio_peaks(name: str):
+        peaks = audio_store.peaks_path(_note_audio(name))
+        if not peaks.is_file():
+            raise HTTPException(status_code=404, detail="no audio")
+        return FileResponse(peaks, media_type="application/json")
+
+    @app.delete("/api/notes/{name}/audio", status_code=204)
+    def delete_audio(name: str):
+        path = _safe_note_path(opts.notes_dir, name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="note not found")
+        audio_store.delete_audio(path)
+        return Response(status_code=204)
 
     @app.get("/api/search")
     def search_endpoint(q: str = ""):
-        return search.search_notes(opts.notes_dir, q)
+        return search.search(opts.notes_dir, q)
 
     @app.post("/api/chat")
     def chat_endpoint(body: ChatBody):
@@ -805,6 +937,8 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
             "notion_configured": cfg.notion_configured,
             "notion_database_id": cfg.notion_database_id,  # id is not a secret
             "notion_token_set": bool(cfg.notion_token),    # never the token itself
+            "templates": {"default": cfg.default_template},
+            "recording": {"keep_audio": cfg.keep_audio},
         }
 
     @app.get("/api/settings")
@@ -816,6 +950,11 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
         if not body.vault.strip():
             raise HTTPException(status_code=400, detail="vault path is required")
         save_config({"obsidian_vault": body.vault})
+        return _settings_state()
+
+    @app.put("/api/settings/recording")
+    def set_recording(body: RecordingSettingsBody):
+        save_config({"keep_audio": body.keep_audio})
         return _settings_state()
 
     @app.delete("/api/settings/obsidian")
@@ -841,6 +980,14 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
     @app.delete("/api/settings/notion")
     def disconnect_notion():
         save_config({"notion_token": None, "notion_database_id": None})
+        return _settings_state()
+
+    @app.put("/api/settings/default-template")
+    def set_default_template(body: DefaultTemplateBody):
+        try:
+            templates.set_default(body.name)
+        except LookupError as exc:
+            raise HTTPException(status_code=400, detail=f"unknown template: {body.name}") from exc
         return _settings_state()
 
     @app.post("/api/notes/{name}/vault")

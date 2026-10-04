@@ -1,6 +1,7 @@
 ---
 name: brainstorm
-description: "Brainstorm — ideas, themes, and what to pursue"
+title: "Brainstorm"
+description: "Ideas, themes, and what to pursue"
 match: [brainstorm, ideation, workshop, kickoff, planning session]
 ---
 ## TL;DR

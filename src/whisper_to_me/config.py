@@ -18,12 +18,21 @@ sent by the sanctioned per-note push (see notion_export.py).
     [notion]                            # the ONE sanctioned network export:
     token = "ntn_..."                   # off unless both keys are set, and
     database_id = "..."                 # only ever pushed per-note by the user
+
+    [templates]
+    default = "standup"                 # used when no template is picked
+    favorites = ["standup"]
+    [recording]
+    keep_audio = false                  # keep each meeting's audio (local m4a)
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +45,9 @@ class Config:
     obsidian_vault: Path | None = None
     notion_token: str | None = None
     notion_database_id: str | None = None
+    default_template: str | None = None
+    favorite_templates: tuple[str, ...] = ()
+    keep_audio: bool = False
 
     @property
     def notion_configured(self) -> bool:
@@ -65,21 +77,33 @@ def load_config(path: Path | None = None) -> Config:
         return Config()
     obsidian = data.get("obsidian") or {}
     notion = data.get("notion") or {}
+    tmpl = data.get("templates") or {}
     if not isinstance(obsidian, dict):
         obsidian = {}
     if not isinstance(notion, dict):
         notion = {}
+    if not isinstance(tmpl, dict):
+        tmpl = {}
+    favorites = tmpl.get("favorites")
+    if not isinstance(favorites, list):
+        favorites = []
+    recording = data.get("recording")
+    if not isinstance(recording, dict):
+        recording = {}
     return Config(
         notes_dir=_path(data.get("notes_dir")),
         obsidian_vault=_path(obsidian.get("vault")),
         notion_token=_string(notion.get("token")),
         notion_database_id=_string(notion.get("database_id")),
+        default_template=_string(tmpl.get("default")),
+        favorite_templates=tuple(filter(None, map(_string, favorites))),
+        keep_audio=recording.get("keep_audio") is True,
     )
 
 
 # -- writing (UI Settings → Connections) --------------------------------------
 # The UI edits the same file hand-editors use. We keep a tiny TOML writer rather
-# than pull in a dependency: the schema is small and fully string-valued, so the
+# than pull in a dependency: the schema is small (strings and one bool), so the
 # risk is low. Comments are not preserved on rewrite (documented in the UI).
 
 # UI-editable field -> where it lives in the file. Top-level keys have no table.
@@ -88,6 +112,9 @@ _FIELDS: dict[str, tuple[str | None, str]] = {
     "obsidian_vault": ("obsidian", "vault"),
     "notion_token": ("notion", "token"),
     "notion_database_id": ("notion", "database_id"),
+    "default_template": ("templates", "default"),
+    "favorite_templates": ("templates", "favorites"),
+    "keep_audio": ("recording", "keep_audio"),
 }
 
 
@@ -101,6 +128,8 @@ def _toml_value(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     return _toml_str(str(value))
 
 
@@ -129,14 +158,34 @@ def _dump_toml(data: dict) -> str:
     return text + "\n" if text else ""
 
 
-def save_config(updates: dict[str, str | None], path: Path | None = None) -> Config:
+Updates = dict[str, str | bool | list[str] | None]
+
+# The daemon serves settings/template writes from a threadpool; each is a
+# read-modify-write of one file, so they must not interleave.
+_SAVE_LOCK = threading.Lock()
+
+
+def save_config(
+    updates: Updates | Callable[[Config], Updates], path: Path | None = None
+) -> Config:
     """Merge `updates` into the config file and write it back atomically.
 
-    Keys are the Config field names in `_FIELDS`; a falsy/blank value clears
-    that setting (and prunes a table that becomes empty). Other keys already in
-    the file are preserved. The file may hold a Notion token, so it is written
-    0600. Purely local disk I/O — this adds no network path."""
+    Keys are the Config field names in `_FIELDS`; a falsy/blank value (or an
+    empty list) clears that setting (and prunes a table that becomes empty);
+    a bool is stored as-is, except False, the default, which clears it too.
+    Other keys already in the file are preserved. The file may hold a Notion token, so it is written
+    0600. Purely local disk I/O — this adds no network path.
+
+    Pass a function of the current Config to compute updates from it under
+    the same lock (e.g. toggling one entry of a list)."""
     path = path or CONFIG_PATH
+    with _SAVE_LOCK:
+        if callable(updates):
+            updates = updates(load_config(path))
+        return _write_updates(updates, path)
+
+
+def _write_updates(updates: Updates, path: Path) -> Config:
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
@@ -145,7 +194,12 @@ def save_config(updates: dict[str, str | None], path: Path | None = None) -> Con
 
     for field, value in updates.items():
         table, key = _FIELDS[field]
-        clean = value.strip() if isinstance(value, str) else None
+        if isinstance(value, bool):
+            clean = value or None
+        elif isinstance(value, list):
+            clean = [v.strip() for v in value if v.strip()] or None
+        else:
+            clean = value.strip() if isinstance(value, str) else None
         target = data
         if table is not None:
             existing = data.get(table)
@@ -159,8 +213,13 @@ def save_config(updates: dict[str, str | None], path: Path | None = None) -> Con
             del data[table]
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(_dump_toml(data), encoding="utf-8")
-    os.chmod(tmp, 0o600)  # holds a secret (Notion token) — keep it user-only
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)  # holds a secret (Notion token) — keep it user-only
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_dump_toml(data))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return load_config(path)

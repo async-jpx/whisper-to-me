@@ -59,19 +59,58 @@ export interface NoteMeta {
   name: string; // filename, e.g. "2026-07-13-standup.md"
   title: string;
   modified: string; // ISO datetime
+  date: string | null; // ISO meeting start from frontmatter, else null
+  app: string | null; // meeting app ("Zoom"), null when unknown
+  has_audio: boolean;
+  duration_s: number | null; // last transcript stamp, null if none
 }
 
-export interface SearchHit extends NoteMeta {
-  /* Snippet hits are bracketed by U+E000/U+E001 private-use markers; render
-     as plain text and turn only the marker pairs into <mark>. */
+/* GET /api/notes/{name}/transcript: the note's transcript section, parsed
+   server-side. `t` is whole seconds from the meeting start, which is also
+   the position in the kept recording. */
+export interface NoteLine {
+  t: number;
+  stamp: string; // "0:03:12"
+  speaker: string | null; // null when only one source was recorded
+  text: string;
+}
+
+/* GET /api/notes/{name}/audio/peaks: ~2 values per second, normalized 0..1. */
+export interface AudioPeaks {
+  duration_s: number;
+  peaks: number[];
+}
+
+/* GET /api/search: one result per note, at most ~3 hits each. Snippets are
+   bracketed by U+E000/U+E001 private-use markers; render as plain text and
+   turn only the marker pairs into <mark>. */
+export interface SearchHit {
+  kind: "title" | "summary" | "line";
+  t: number | null; // seconds from the meeting start, for "line" hits
+  speaker: string | null;
   snippet: string;
+}
+
+export interface SearchResult {
+  name: string;
+  title: string;
+  date: string | null;
+  app: string | null;
+  hits: SearchHit[];
 }
 
 export interface Template {
   name: string;
+  title: string;
   description: string;
-  builtin: boolean;
+  builtin: boolean; // built-ins are read-only: no edit, no delete
+  favorite: boolean;
+  /* The configured default, or the built-in "default" when none is set. */
+  is_default: boolean;
+  body: string; // the summary sections the template produces
 }
+
+export type NewTemplate = Pick<Template, "name" | "description" | "body">;
 
 export interface ChatSource {
   n: number;
@@ -90,4 +129,7 @@ export interface Settings {
   notion_database_id: string | null;
   /* True when a token is on file. The token itself is never sent to the page. */
   notion_token_set: boolean;
+  recording: { keep_audio: boolean };
+  /* The user's chosen default template; null = none chosen. */
+  templates: { default: string | null };
 }

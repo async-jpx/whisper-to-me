@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
 try:
     import whisper_to_me.watch  # noqa: F401  (macOS: the real module loads)
 except OSError:  # no CoreAudio: not macOS
@@ -17,4 +19,18 @@ except OSError:  # no CoreAudio: not macOS
     stub.meeting_title_hint = lambda trigger: None
     stub.zoom_meeting_active = lambda: False
     stub.mic_in_use_by_others = lambda exclude_pids=frozenset(): None
+    stub.mic_app_name = lambda exclude_pids=frozenset(): None
     sys.modules["whisper_to_me.watch"] = stub
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_config(monkeypatch, tmp_path_factory):
+    """No test may read or write the real ~/.config/whisper-to-me: a user's
+    [templates] default or own template files would change what the template
+    precedence tests (and the "no template == default" identity) observe."""
+    import whisper_to_me.config as config
+    import whisper_to_me.templates as templates
+
+    home = tmp_path_factory.mktemp("wtm-config")
+    monkeypatch.setattr(config, "CONFIG_PATH", home / "config.toml")
+    monkeypatch.setattr(templates, "USER_TEMPLATES_DIR", home / "templates")

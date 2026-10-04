@@ -10,7 +10,7 @@ from typing import Callable
 
 from rich.console import Console
 
-from . import audio, dedup, notes
+from . import audio, audio_store, dedup, notes, templates
 from . import summarize as summ
 
 console = Console()
@@ -131,9 +131,11 @@ def record_session(
     diarize: bool = False,
     events: EventSink | None = None,
     stop_event: threading.Event | None = None,
+    keep_audio: bool = False,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Record (mic + system audio) until Ctrl-C, should_stop(recorders), or
-    stop_event.is_set() — whichever comes first.
+    stop_event.is_set() — whichever comes first. With keep_audio, the mixed
+    recording is saved beside the live journal (see audio_store).
 
     Returns (transcript_lines, started); lines are (stamp, text) sorted by
     capture time, with speaker labels when there is more than one source.
@@ -181,6 +183,10 @@ def record_session(
     # can never lose the transcript. summarize_and_save rewrites this file
     # with the time-sorted transcript and the summary at the end.
     live_path = notes.start_live_note(title, started, notes_dir)
+    capture = audio_store.AudioCapture(live_path, started) if keep_audio else None
+    if capture is not None:
+        for _, rec in sources:
+            rec.block_tap = capture.track()
 
     def make_worker(speaker: str, recorder: audio.Recorder) -> threading.Thread:
         def worker() -> None:
@@ -248,6 +254,8 @@ def record_session(
                 rec.stop()
             except Exception:
                 pass
+        if capture is not None:
+            capture.discard()
         raise
     for w in workers:
         w.start()
@@ -290,6 +298,12 @@ def record_session(
             "type": "error",
             "message": f"An audio source failed to shut down cleanly: {stop_error}",
         })
+    if capture is not None:
+        # Best-effort: a failed encode must never cost the transcript.
+        try:
+            capture.finish()
+        except Exception as exc:
+            sink({"type": "error", "message": f"Couldn't keep the meeting audio: {exc}"})
 
     if filter_echoes:
         kept = dedup.drop_echoes(raw_lines)
@@ -358,6 +372,7 @@ def simulate_session(
     use_aec: bool = True,
     diarize: bool = False,
     events: EventSink | None = None,
+    keep_audio: bool = False,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Replay audio files through the live pipeline — chunking, transcription,
     echo filtering, merging — with no audio devices. The regression-test path:
@@ -380,6 +395,7 @@ def simulate_session(
         use_aec=use_aec,
         diarize=diarize,
         should_stop=lambda recorders: all(r.finished for r in recorders),
+        keep_audio=keep_audio,
     )
 
 
@@ -395,6 +411,7 @@ def summarize_and_save(
     user_notes: str = "",
     template: str | None = None,
     events: EventSink | None = None,
+    app: str | None = None,
 ) -> Path:
     sink = resolve_sink(events)
     summary = None
@@ -410,6 +427,7 @@ def summarize_and_save(
             })
         else:
             sink({"type": "summarizing", "model": ollama_model})
+            template = templates.resolve_template(template, title)
             try:
                 summary, inferred_title, facts = summ.summarize_meeting(
                     text,
@@ -435,13 +453,17 @@ def summarize_and_save(
         started,
         attendees=attendees,
         user_notes=user_notes,
+        app=app,
     )
     # The live journal was created under the placeholder title; now that the
     # final note is safely on disk, drop the stale copy. Never delete before
     # the new file exists — a crash in between must leave one complete copy.
+    # The recording moves first, so it always sits beside a complete note.
     live_path = notes.note_path(title, started, notes_dir)
-    if live_path != path and live_path.exists():
-        live_path.unlink()
+    if live_path != path:
+        audio_store.move_audio(live_path, path)
+        if live_path.exists():
+            live_path.unlink()
     # "summary" here is CLI-only sugar for ConsoleSink's rule+body print; a
     # wire sink (server.py) strips it before broadcasting — the "saved" event
     # contract is just path/title/name, and a UI fetches the note body via

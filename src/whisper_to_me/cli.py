@@ -99,6 +99,7 @@ def cmd_record(args) -> None:
         keep_echoes=args.keep_echoes,
         use_aec=not args.no_aec,
         diarize=args.diarize,
+        keep_audio=load_config().keep_audio,
     )
     _finish(args, transcript_lines, started, title)
 
@@ -120,6 +121,7 @@ def cmd_simulate(args) -> None:
         keep_echoes=args.keep_echoes,
         use_aec=not args.no_aec,
         diarize=args.diarize,
+        keep_audio=load_config().keep_audio,
     )
     _finish(args, transcript_lines, started, title)
 
@@ -138,6 +140,8 @@ def cmd_transcribe(args) -> None:
 
 
 def cmd_summarize(args) -> None:
+    from . import templates as tmpl
+
     text = Path(args.file).read_text(encoding="utf-8")
     user_notes = Path(args.user_notes).read_text(encoding="utf-8") if args.user_notes else ""
     if not summ.check_model(args.ollama_model):
@@ -149,7 +153,7 @@ def cmd_summarize(args) -> None:
             model=args.ollama_model,
             context=args.context,
             user_notes=user_notes,
-            template=args.template,
+            template=tmpl.resolve_template(args.template, None),
         )
     if title:
         console.print(f"[bold]{title}[/bold]\n")
