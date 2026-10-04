@@ -7,9 +7,11 @@
 import { create } from "zustand";
 import { api } from "./api/client";
 import { IDLE_STATUS, isActive } from "./api/types";
-import type { NoteMeta, SearchHit, Status, Template } from "./api/types";
+import type { NoteMeta, SearchResult, Status, Template } from "./api/types";
 
-export type View = "empty" | "transcript" | "note" | "chat";
+/* The page shown in the main pane. "note" pairs with currentNote; every
+   other view has currentNote === null. */
+export type View = "home" | "live" | "note" | "chat" | "templates" | "settings";
 
 export interface TranscriptLine {
   kind: "line";
@@ -68,10 +70,12 @@ export interface AppState {
      dirty-guard see unsaved edits without owning the textarea. */
   editorDraft: string | null;
   viewArchived: boolean;
+  /* Narrow windows only: the sidebar is an off-canvas drawer. */
+  drawerOpen: boolean;
   // -- data caches ---------------------------------------------------------
   notes: NoteMeta[];
   archived: NoteMeta[];
-  searchResults: SearchHit[] | null; // null = no active search
+  searchResults: SearchResult[] | null; // null = no active search
   templates: Template[];
   // -- shared UI -------------------------------------------------------------
   toasts: Toast[];
@@ -94,7 +98,9 @@ export interface AppState {
   setScratchpad(content: string): void;
   syncScratchpad(): Promise<void>;
 
-  setView(view: View): void;
+  /* Leaves the open note (guarding unsaved edits) for a non-note view. */
+  navigate(view: Exclude<View, "note">): Promise<void>;
+  setDrawerOpen(open: boolean): void;
   openLive(): void;
   openNote(name: string): Promise<void>;
   forgetOpenNote(name: string): void;
@@ -107,10 +113,8 @@ export interface AppState {
   refreshNotes(): Promise<void>;
   refreshArchived(): Promise<void>;
   setSidebarTab(archived: boolean): void;
-  setSearchResults(results: SearchHit[] | null): void;
+  setSearchResults(results: SearchResult[] | null): void;
   loadTemplates(): Promise<void>;
-
-  openChat(): void;
 }
 
 export const useStore = create<AppState>()((set, get) => ({
@@ -120,13 +124,14 @@ export const useStore = create<AppState>()((set, get) => ({
   transcript: [],
   brief: null,
   scratchpad: "",
-  view: "empty",
+  view: "home",
   currentNote: null,
   currentNoteMd: null,
   editing: false,
   noteRenderSeq: 0,
   editorDraft: null,
   viewArchived: false,
+  drawerOpen: false,
   notes: [],
   archived: [],
   searchResults: null,
@@ -164,8 +169,8 @@ export const useStore = create<AppState>()((set, get) => ({
       scratchpad: fresh ? "" : s.scratchpad,
     }));
     const { view, currentNote } = get();
-    if (view === "empty" && isActive(status) && currentNote === null) {
-      set({ view: "transcript" });
+    if (view === "home" && isActive(status) && currentNote === null) {
+      set({ view: "live" });
     }
   },
   setDaemonUp(up) {
@@ -200,11 +205,25 @@ export const useStore = create<AppState>()((set, get) => ({
     }
   },
 
-  setView(view) {
-    set({ view });
+  async navigate(view) {
+    const s = get();
+    if (s.editorDirty() && !(await s.confirmDialog("Discard your unsaved edits?"))) {
+      return;
+    }
+    set({
+      view,
+      currentNote: null,
+      currentNoteMd: null,
+      editing: false,
+      editorDraft: null,
+      drawerOpen: false,
+    });
+  },
+  setDrawerOpen(open) {
+    set({ drawerOpen: open });
   },
   openLive() {
-    set({ currentNote: null, view: "transcript" });
+    void get().navigate("live");
   },
   async openNote(name) {
     const s = get();
@@ -219,6 +238,7 @@ export const useStore = create<AppState>()((set, get) => ({
         editing: false,
         editorDraft: null,
         view: "note",
+        drawerOpen: false,
       });
     } catch {
       get().toast("Could not load that note.", "error");
@@ -231,7 +251,7 @@ export const useStore = create<AppState>()((set, get) => ({
       currentNoteMd: null,
       editing: false,
       editorDraft: null,
-      view: "empty",
+      view: "home",
     });
   },
   setEditing(editing, draft = null) {
@@ -295,9 +315,5 @@ export const useStore = create<AppState>()((set, get) => ({
     } catch {
       /* non-critical: the Auto option alone still works */
     }
-  },
-
-  openChat() {
-    set({ currentNote: null, view: "chat" });
   },
 }));

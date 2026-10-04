@@ -159,9 +159,9 @@ export function ExportMenu() {
     const raw = useStore.getState().currentNoteMd || "";
     const titleStr: string = noteTitleFromMd(raw) ?? currentNote ?? "note";
     const ok = await confirmDialog(
-      `Send this entire note — “${titleStr}” (title, date, attendees, summary and ` +
-        `full transcript, exactly as shown) — to your Notion database via ` +
-        `api.notion.com?\n\nThis is the only whisper-to-me action that sends ` +
+      `Send “${titleStr}” to your Notion database via api.notion.com?\n\n` +
+        `The whole note goes, exactly as shown: title, date, attendees, summary ` +
+        `and full transcript.\n\nThis is the only Hush action that sends ` +
         `anything off this machine. Nothing else is ever uploaded.`
     );
     if (!ok) return;

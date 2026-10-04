@@ -161,21 +161,27 @@ search.py      SQLite FTS5 index over notes (a cache: PRAGMA user_version =
                ≤3 hits per note so the UI can seek to the second
 webui/         web UI source: React 18 + TypeScript strict + Tailwind v4 +
                Vite + Zustand, all deps bundled locally (no CDN, no runtime
-               network). src/legacy.css is the original stylesheet (minus
-               rules for deleted UI) —
-               components reuse its class names for pixel parity; Tailwind
-               utilities (no preflight — it would fight legacy.css) layer on
-               top via @theme tokens. store.ts + ws.ts are the WS-authoritative
+               network). Displayed as "Hush". src/app.css holds the design
+               tokens (:root light + prefers-color-scheme dark: --bg,
+               --surface, --text*, --accent #2383e2/#4dabf7, radii, shadows)
+               and component classes; Tailwind utilities (no preflight)
+               layer on top via @theme tokens (bg-surface, text-accent…).
+               store.View routes the main pane (home | live | note | chat |
+               templates | settings); navigate() guards unsaved edits and
+               closes the narrow-window drawer. <Composer> is the one text
+               input (Enter sends, Shift+Enter newline). store.ts + ws.ts are the WS-authoritative
                status model (backoff reconnect, resync-on-focus, recordPending
                5s failsafe); api/types.ts `Status` is a union mirroring
                status_wire (idle | prompting+prompt | session phase+origin);
                only Active phases switch to the live view or show "Live
                session". The web UI never answers prompts — the status line
-               just says "Meeting detected — …" and New meeting stays enabled
+               just says "Meeting detected: …" and New meeting stays enabled
                (it supersedes the prompt); the overlay and tray answer.
                Components cover #note= deep links, live
-               scratchpad, template picker, chat view, briefs, Settings →
-               Connections, export menu (incl. the confirmed Notion push).
+               scratchpad, template picker, chat view, briefs, the Settings
+               page (General: keep recordings; Connections), sidebar notes
+               grouped by day or app (lib/noteGroups.ts, choice in
+               localStorage), export menu (incl. the confirmed Notion push).
                Editors are CodeMirror 6
                (MarkdownEditor.tsx + lib/cm.ts commands); the chat view runs
                on @ai-sdk/react useChat (module-level Chat instance keeps the

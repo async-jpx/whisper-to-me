@@ -59,16 +59,33 @@ export interface NoteMeta {
   name: string; // filename, e.g. "2026-07-13-standup.md"
   title: string;
   modified: string; // ISO datetime
+  date: string | null; // ISO meeting start from frontmatter, else null
+  app: string | null; // meeting app ("Zoom"), null when unknown
+  has_audio: boolean;
+  duration_s: number | null; // last transcript stamp, null if none
 }
 
-export interface SearchHit extends NoteMeta {
-  /* Snippet hits are bracketed by U+E000/U+E001 private-use markers; render
-     as plain text and turn only the marker pairs into <mark>. */
+/* GET /api/search: one result per note, at most ~3 hits each. Snippets are
+   bracketed by U+E000/U+E001 private-use markers; render as plain text and
+   turn only the marker pairs into <mark>. */
+export interface SearchHit {
+  kind: "title" | "summary" | "line";
+  t: number | null; // seconds from the meeting start, for "line" hits
+  speaker: string | null;
   snippet: string;
+}
+
+export interface SearchResult {
+  name: string;
+  title: string;
+  date: string | null;
+  app: string | null;
+  hits: SearchHit[];
 }
 
 export interface Template {
   name: string;
+  title: string;
   description: string;
   builtin: boolean;
 }
@@ -90,4 +107,5 @@ export interface Settings {
   notion_database_id: string | null;
   /* True when a token is on file. The token itself is never sent to the page. */
   notion_token_set: boolean;
+  recording: { keep_audio: boolean };
 }

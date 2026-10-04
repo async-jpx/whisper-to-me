@@ -1,22 +1,30 @@
-import { useEffect, useRef, useState } from "react";
-import { useStore } from "../store";
-import { api } from "../api/client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useStore, type View } from "../store";
+import { api, ApiError } from "../api/client";
 import { isActive } from "../api/types";
-import type { NoteMeta, SearchHit } from "../api/types";
-import { Icon } from "./Icons";
-import { SettingsModal } from "./SettingsModal";
+import type { NoteMeta, SearchResult } from "../api/types";
+import { groupNotes, rowTime, type GroupMode } from "../lib/noteGroups";
+import { Icon, type IconName } from "./Icons";
+import { Logo } from "./Logo";
 
-function formatRelativeDate(iso: string): string {
-  const then = new Date(iso);
-  if (Number.isNaN(then.getTime())) return "";
-  const diffMs = Date.now() - then.getTime();
-  const diffDay = Math.floor(diffMs / 86400000);
-  if (diffDay <= 0) {
-    return then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+type NoteRef = Pick<NoteMeta, "name" | "title">;
+
+const GROUP_KEY = "hush.sidebar.groupBy";
+
+function readGroupMode(): GroupMode {
+  try {
+    return localStorage.getItem(GROUP_KEY) === "app" ? "app" : "day";
+  } catch {
+    return "day";
   }
-  if (diffDay === 1) return "yesterday";
-  if (diffDay < 7) return `${diffDay} days ago`;
-  return then.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function writeGroupMode(mode: GroupMode): void {
+  try {
+    localStorage.setItem(GROUP_KEY, mode);
+  } catch {
+    /* private window or blocked storage: the toggle still works this session */
+  }
 }
 
 interface SnippetPart {
@@ -26,21 +34,45 @@ interface SnippetPart {
 
 function parseSnippet(snippet: string): SnippetPart[] {
   const parts: SnippetPart[] = [];
-  const splits = snippet.split(/[]/);
   let marked = false;
-  for (const part of splits) {
-    if (part) {
-      parts.push({ text: part, marked });
-    }
+  for (const part of snippet.split(/[\uE000\uE001]/)) {
+    if (part) parts.push({ text: part, marked });
     marked = !marked;
   }
   return parts;
 }
 
+function busyMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError && err.status === 409
+    ? "That note is still being recorded."
+    : fallback;
+}
+
+function NavItem({
+  icon,
+  label,
+  view,
+  onClick,
+}: {
+  icon: IconName;
+  label: string;
+  view?: View;
+  onClick: () => void;
+}) {
+  const active = useStore((s) => view !== undefined && s.view === view);
+  return (
+    <button className={"sb-item" + (active ? " active" : "")} onClick={onClick}>
+      <Icon name={icon} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 export function Sidebar() {
+  const view = useStore((s) => s.view);
   const viewArchived = useStore((s) => s.viewArchived);
   const setSidebarTab = useStore((s) => s.setSidebarTab);
-  const openChat = useStore((s) => s.openChat);
+  const navigate = useStore((s) => s.navigate);
   const notes = useStore((s) => s.notes);
   const archived = useStore((s) => s.archived);
   const searchResults = useStore((s) => s.searchResults);
@@ -54,18 +86,26 @@ export function Sidebar() {
   const status = useStore((s) => s.status);
   const confirmDialog = useStore((s) => s.confirmDialog);
   const toast = useStore((s) => s.toast);
+  const drawerOpen = useStore((s) => s.drawerOpen);
+  const setDrawerOpen = useStore((s) => s.setDrawerOpen);
 
   const [searchInput, setSearchInput] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [groupMode, setGroupMode] = useState<GroupMode>(readGroupMode);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchSeqRef = useRef(0);
 
-  // Cleanup search timer on unmount
   useEffect(() => {
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
   }, []);
+
+  const groups = useMemo(() => groupNotes(notes, groupMode, new Date()), [notes, groupMode]);
+
+  const chooseGroupMode = (mode: GroupMode) => {
+    setGroupMode(mode);
+    writeGroupMode(mode);
+  };
 
   // Takes the query as a parameter: a debounced call reading `searchInput`
   // from its own render's closure would search one keystroke behind.
@@ -76,12 +116,11 @@ export function Sidebar() {
       setSearchResults(null);
       return;
     }
-    let results: SearchHit[] = [];
+    let results: SearchResult[] = [];
     try {
       results = await api.search(q);
     } catch {
-      /* daemon hiccup: show "No matches." rather than a stale list */
-      results = [];
+      /* daemon hiccup: show "No matches" rather than a stale list */
     }
     if (seq !== searchSeqRef.current) return;
     setSearchResults(results);
@@ -93,16 +132,14 @@ export function Sidebar() {
     searchTimerRef.current = setTimeout(() => void runSearch(value), 200);
   };
 
-  const handleSearchKeydown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Escape") {
-      setSearchInput("");
-      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-      searchSeqRef.current++;
-      setSearchResults(null);
-    }
+  const clearSearch = () => {
+    setSearchInput("");
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchSeqRef.current++;
+    setSearchResults(null);
   };
 
-  const handleArchiveNote = async (note: NoteMeta) => {
+  const handleArchiveNote = async (note: NoteRef) => {
     try {
       await api.archiveNote(note.name);
       forgetOpenNote(note.name);
@@ -110,19 +147,14 @@ export function Sidebar() {
       await refreshArchived();
       toast(`Archived “${note.title}”`);
     } catch (err) {
-      const isError = err instanceof Error;
-      const status = isError && "status" in err ? (err as any).status : null;
-      toast(
-        status === 409 ? "That note is still being recorded." : "Could not archive the note.",
-        "error"
-      );
+      toast(busyMessage(err, "Could not archive the note."), "error");
     }
   };
 
-  const handleDeleteNote = async (note: NoteMeta) => {
+  const handleDeleteNote = async (note: NoteRef) => {
     const ok = await confirmDialog(
       `Delete “${note.title}”?\n\nThis permanently removes the note file.`,
-      { danger: true }
+      { danger: true },
     );
     if (!ok) return;
     try {
@@ -131,16 +163,11 @@ export function Sidebar() {
       await refreshNotes();
       toast(`Deleted “${note.title}”`);
     } catch (err) {
-      const isError = err instanceof Error;
-      const status = isError && "status" in err ? (err as any).status : null;
-      toast(
-        status === 409 ? "That note is still being recorded." : "Could not delete the note.",
-        "error"
-      );
+      toast(busyMessage(err, "Could not delete the note."), "error");
     }
   };
 
-  const handleRestoreNote = async (note: NoteMeta) => {
+  const handleRestoreNote = async (note: NoteRef) => {
     try {
       await api.restoreNote(note.name);
       await refreshArchived();
@@ -151,10 +178,8 @@ export function Sidebar() {
     }
   };
 
-  const handleDeleteArchivedNote = async (note: NoteMeta) => {
-    const ok = await confirmDialog(`Delete “${note.title}” permanently?`, {
-      danger: true,
-    });
+  const handleDeleteArchivedNote = async (note: NoteRef) => {
+    const ok = await confirmDialog(`Delete “${note.title}” permanently?`, { danger: true });
     if (!ok) return;
     try {
       await api.deleteArchived(note.name);
@@ -165,200 +190,214 @@ export function Sidebar() {
     }
   };
 
-  const handleNotesTabClick = () => {
-    setSidebarTab(false);
-    setSearchInput("");
-    setSearchResults(null);
-  };
-
-  const renderArchivedList = () => {
-    if (archived.length === 0) {
-      return <div className="notes-empty">No archived notes.</div>;
-    }
-    return archived.map((note) => (
-      <li key={note.name}>
-        <div className="note-row">
-          <div className="note-item note-item-static">
-            <span className="note-title">{note.title}</span>
-            <span className="note-date">{formatRelativeDate(note.modified)}</span>
-          </div>
-          <div className="note-actions">
-            <button
-              className="note-action"
-              title="Restore note"
-              aria-label="Restore note"
-              onClick={(e) => {
-                e.stopPropagation();
-                void handleRestoreNote(note);
-              }}
-            >
-              <Icon name="restore" />
-            </button>
-            <button
-              className="note-action note-action-danger"
-              title="Delete permanently"
-              aria-label="Delete permanently"
-              onClick={(e) => {
-                e.stopPropagation();
-                void handleDeleteArchivedNote(note);
-              }}
-            >
-              <Icon name="trash" />
-            </button>
-          </div>
-        </div>
-      </li>
-    ));
-  };
-
-  const renderNotesList = () => {
-    if (viewArchived) {
-      return renderArchivedList();
-    }
-
-    const entries: (NoteMeta | null)[] = [];
-
-    if (isActive(status)) {
-      entries.push(null); // placeholder for live item
-    }
-
-    // Add search results or notes
-    const searching = searchResults !== null;
-    const notesList = searching ? searchResults : notes;
-    entries.push(...notesList);
-
-    // Render empty state if needed
-    if (notesList.length === 0) {
-      if (searching || !isActive(status)) {
-        return <div className="notes-empty">{searching ? "No matches." : "No notes yet."}</div>;
-      }
-      return null;
-    }
-
-    // Render all entries
-    return entries.map((entry) => {
-      // Live session item
-      if (entry === null) {
-        return (
-          <li key="live-session">
-            <button
-              className={"live-item" + (currentNote === null ? " active" : "")}
-              onClick={() => openLive()}
-            >
-              <span
-                className={"status-dot status-" + status.state}
-                style={{ width: 7, height: 7 }}
-              />
-              <span>Live session</span>
-            </button>
-          </li>
-        );
-      }
-
-      // Regular note item
-      const note = entry as NoteMeta;
-      const searching = searchResults !== null;
-      const hit = (searching ? (searchResults?.find((r) => r.name === note.name) as SearchHit | undefined) : undefined);
-
-      return (
-        <li key={note.name}>
-          <div className="note-row">
-            <button
-              className={"note-item" + (currentNote === note.name ? " active" : "")}
-              onClick={() => void openNote(note.name)}
-            >
-              <span className="note-title">{note.title}</span>
-              <span className="note-date">{formatRelativeDate(note.modified)}</span>
-              {searching && hit?.snippet && (
-                <span className="note-snippet">
-                  {parseSnippet(hit.snippet).map((part, i) =>
-                    part.marked ? (
-                      <mark key={i}>{part.text}</mark>
-                    ) : (
-                      <span key={i}>{part.text}</span>
-                    )
-                  )}
-                </span>
+  const noteRow = (note: NoteRef, meta: string, snippet?: string) => (
+    <li key={note.name}>
+      <div className={"note-row" + (currentNote === note.name ? " active" : "")}>
+        <button className="note-item" onClick={() => void openNote(note.name)}>
+          <span className="note-title">{note.title}</span>
+          {snippet && (
+            <span className="note-snippet">
+              {parseSnippet(snippet).map((part, i) =>
+                part.marked ? <mark key={i}>{part.text}</mark> : <span key={i}>{part.text}</span>,
               )}
-            </button>
-            <div className="note-actions">
-              <button
-                className="note-action"
-                title="Archive note"
-                aria-label="Archive note"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleArchiveNote(note);
-                }}
-              >
-                <Icon name="archive" />
-              </button>
-              <button
-                className="note-action note-action-danger"
-                title="Delete note"
-                aria-label="Delete note"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleDeleteNote(note);
-                }}
-              >
-                <Icon name="trash" />
-              </button>
-            </div>
-          </div>
-        </li>
-      );
-    });
-  };
-
-  return (
-    <aside className="sidebar">
-      <div className="sidebar-header">
-        <span className="brand">whisper-to-me</span>
-        <span className="sidebar-header-actions">
-          <button className="btn btn-ghost btn-sm" onClick={() => openChat()}>
-            <Icon name="ask" />
-            <span>Ask</span>
+            </span>
+          )}
+        </button>
+        <span className="note-meta">{meta}</span>
+        <div className="note-actions">
+          <button
+            className="note-action"
+            title="Archive"
+            aria-label="Archive note"
+            onClick={() => void handleArchiveNote(note)}
+          >
+            <Icon name="archive" />
           </button>
           <button
-            className="btn btn-ghost btn-sm"
-            title="Connections & settings"
-            aria-label="Settings"
-            onClick={() => setSettingsOpen(true)}
+            className="note-action note-action-danger"
+            title="Delete"
+            aria-label="Delete note"
+            onClick={() => void handleDeleteNote(note)}
           >
-            <Icon name="settings" />
+            <Icon name="trash" />
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+
+  const renderArchived = () => (
+    <>
+      <div className="sb-section-head">
+        <button className="sb-back" onClick={() => setSidebarTab(false)}>
+          <Icon name="chevronLeft" />
+          <span>Archived</span>
+        </button>
+      </div>
+      {archived.length === 0 ? (
+        <p className="notes-empty">Nothing archived.</p>
+      ) : (
+        <ul className="notes-list">
+          {archived.map((note) => (
+            <li key={note.name}>
+              <div className="note-row">
+                <span className="note-item note-item-static">
+                  <span className="note-title">{note.title}</span>
+                </span>
+                <span className="note-meta">{rowTime(note, "app")}</span>
+                <div className="note-actions">
+                  <button
+                    className="note-action"
+                    title="Restore"
+                    aria-label="Restore note"
+                    onClick={() => void handleRestoreNote(note)}
+                  >
+                    <Icon name="restore" />
+                  </button>
+                  <button
+                    className="note-action note-action-danger"
+                    title="Delete permanently"
+                    aria-label="Delete permanently"
+                    onClick={() => void handleDeleteArchivedNote(note)}
+                  >
+                    <Icon name="trash" />
+                  </button>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+
+  const renderSearch = (results: SearchResult[]) =>
+    results.length === 0 ? (
+      <p className="notes-empty">No matches.</p>
+    ) : (
+      <>
+        <div className="sb-section-head">
+          <span className="sb-group-label">Results</span>
+        </div>
+        <ul className="notes-list">
+          {results.map((r) => noteRow(r, "", r.hits.find((h) => h.kind !== "title")?.snippet))}
+        </ul>
+      </>
+    );
+
+  const renderGroups = () => (
+    <>
+      <div className="sb-section-head">
+        <span className="sb-group-label">Notes</span>
+        <span className="sb-head-tools">
+          <span className="segmented" role="radiogroup" aria-label="Group notes by">
+            {(["day", "app"] as const).map((mode) => (
+              <button
+                key={mode}
+                role="radio"
+                aria-checked={groupMode === mode}
+                className={groupMode === mode ? "active" : ""}
+                onClick={() => chooseGroupMode(mode)}
+              >
+                {mode === "day" ? "Day" : "App"}
+              </button>
+            ))}
+          </span>
+          <button
+            className="sb-icon-btn"
+            title={archived.length ? `Archived (${archived.length})` : "Archived"}
+            aria-label="Show archived notes"
+            onClick={() => {
+              clearSearch();
+              setSidebarTab(true);
+            }}
+          >
+            <Icon name="archive" />
           </button>
         </span>
       </div>
-      {!viewArchived && (
-        <div className="sidebar-search">
-          <input
-            id="search-input"
-            type="search"
-            placeholder="Search notes…"
-            autoComplete="off"
-            value={searchInput}
-            onChange={(e) => handleSearchInput(e.target.value)}
-            onKeyDown={handleSearchKeydown}
-          />
-        </div>
+      {isActive(status) && (
+        <button className={"live-item" + (view === "live" ? " active" : "")} onClick={openLive}>
+          <span className={"status-dot status-" + status.state} />
+          <span>Live session</span>
+        </button>
       )}
-      <div className="sidebar-tabs">
-        <button
-          className={"sidebar-tab" + (viewArchived ? "" : " active")}
-          onClick={handleNotesTabClick}
-        >
-          Notes
-        </button>
-        <button
-          className={"sidebar-tab" + (viewArchived ? " active" : "")}
-          onClick={() => setSidebarTab(true)}
-        >
-          {archived.length ? `Archived (${archived.length})` : "Archived"}
-        </button>
-      </div>
-      <ul className="notes-list">{renderNotesList()}</ul>
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-    </aside>
+      {notes.length === 0 && !isActive(status) && <p className="notes-empty">No notes yet.</p>}
+      {groups.map((g) => (
+        <section key={g.key} className="sb-group">
+          <h3 className="sb-group-label">{g.label}</h3>
+          <ul className="notes-list">{g.notes.map((n) => noteRow(n, rowTime(n, groupMode)))}</ul>
+        </section>
+      ))}
+    </>
+  );
+
+  return (
+    <>
+      <aside className={"sidebar" + (drawerOpen ? " is-open" : "")} aria-label="Sidebar">
+        <div className="sb-brand">
+          <Logo size={26} />
+          <span className="brand">Hush</span>
+          <button
+            className="sb-icon-btn sb-close"
+            aria-label="Close sidebar"
+            onClick={() => setDrawerOpen(false)}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+        <nav className="sb-nav">
+          <NavItem icon="plus" label="New meeting" view="home" onClick={() => void navigate("home")} />
+          <NavItem icon="ask" label="Ask your notes" view="chat" onClick={() => void navigate("chat")} />
+          <NavItem
+            icon="templates"
+            label="Templates"
+            view="templates"
+            onClick={() => void navigate("templates")}
+          />
+        </nav>
+        {!viewArchived && (
+          <label className="search-field">
+            <Icon name="search" />
+            <input
+              type="search"
+              placeholder="Search notes"
+              aria-label="Search notes"
+              autoComplete="off"
+              spellCheck={false}
+              value={searchInput}
+              onChange={(e) => handleSearchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") clearSearch();
+              }}
+            />
+          </label>
+        )}
+        <div className="sb-scroll">
+          {viewArchived
+            ? renderArchived()
+            : searchResults !== null
+              ? renderSearch(searchResults)
+              : renderGroups()}
+        </div>
+        <div className="sb-footer">
+          <button
+            className={"sb-user" + (view === "settings" ? " active" : "")}
+            onClick={() => void navigate("settings")}
+          >
+            <span className="sb-avatar">
+              <Icon name="user" />
+            </span>
+            <span>Settings</span>
+            <Icon name="settings" className="sb-user-gear" />
+          </button>
+        </div>
+      </aside>
+      <div
+        className={"drawer-scrim" + (drawerOpen ? " is-open" : "")}
+        onClick={() => setDrawerOpen(false)}
+        aria-hidden="true"
+      />
+    </>
   );
 }
