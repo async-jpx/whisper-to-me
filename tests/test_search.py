@@ -103,7 +103,7 @@ def test_line_hit_carries_seconds_and_speaker(tmp_path):
     _meeting(tmp_path)
     [result] = search.search(tmp_path, "exporter")
     assert (result["name"], result["title"]) == ("m.md", "Exporter sync")
-    assert (result["date"], result["app"]) == ("2026-09-30T10:00", "Zoom")
+    assert (result["date"], result["app"]) == ("2026-09-30T10:00:00", "Zoom")
     lines = [h for h in result["hits"] if h["kind"] == "line"]
     assert [(h["t"], h["speaker"]) for h in lines] == [(192, "Others")]
     assert search.HL_OPEN + "exporter" + search.HL_CLOSE in lines[0]["snippet"]

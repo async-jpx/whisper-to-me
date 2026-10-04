@@ -28,7 +28,7 @@ from pathlib import Path
 from . import notes
 
 INDEX_FILENAME = ".wtm-index.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Private-use characters bracket each hit inside a snippet; the UI escapes
 # the snippet as plain text first, then swaps these for real <mark> tags —
@@ -67,8 +67,6 @@ CREATE VIRTUAL TABLE hits_fts USING fts5(
 );
 """
 
-_STAMP_LINE_RE = re.compile(r"^\*\*\[(\d+):(\d{2}):(\d{2})\]\*\*\s*(.*)$")
-_SPEAKER_RE = re.compile(r"^\*\*([^*]+):\*\*\s*(.*)$")
 _TRANSCRIPT_RE = re.compile(r"^## Transcript\s*$", flags=re.MULTILINE)
 
 
@@ -101,15 +99,6 @@ def _plain(md: str) -> str:
     return text.replace("*", "")
 
 
-def _front_value(front: str | None, key: str) -> str | None:
-    if not front:
-        return None
-    m = re.search(rf"^{key}:\s*(.+)$", front, flags=re.MULTILINE)
-    if not m:
-        return None
-    return m.group(1).strip().strip("\"'") or None
-
-
 def _rows(title: str, body: str) -> list[_Row]:
     """A note body (frontmatter already split off) → its hit rows: the title,
     the summary (everything above `## Transcript`, minus the H1), and one row
@@ -121,21 +110,10 @@ def _rows(title: str, body: str) -> list[_Row]:
     summary = _plain(summary).strip()
     if summary:
         rows.append(_Row("summary", None, None, summary))
-    if cut:
-        for raw in body[cut.end() :].splitlines():
-            line = raw.strip()
-            t: int | None = None
-            m = _STAMP_LINE_RE.match(line)
-            if m:
-                h, mi, s, line = m.groups()
-                t = int(h) * 3600 + int(mi) * 60 + int(s)
-            speaker = None
-            sm = _SPEAKER_RE.match(line)
-            if sm:
-                speaker, line = sm.group(1).strip(), sm.group(2)
-            line = line.replace("*", "").strip()
-            if line and line != "(empty)":
-                rows.append(_Row("line", t, speaker, line))
+    for line in notes.parse_transcript(body):
+        text = line.text.replace("*", "").strip()
+        if text and text != "(empty)":
+            rows.append(_Row("line", line.t, line.speaker, text))
     return rows
 
 
@@ -160,13 +138,8 @@ def _sync(db: sqlite3.Connection, notes_dir: Path) -> None:
             continue  # vanished or unreadable mid-scan: index it next time
         front, body = notes.split_frontmatter(text)
         title = notes.note_title(path)
-        date = _front_value(front, "date")
-        ts = mtime
-        if date:
-            try:
-                ts = datetime.fromisoformat(date).timestamp()
-            except ValueError:
-                date = None
+        date = notes.meeting_date(text)
+        ts = datetime.fromisoformat(date).timestamp() if date else mtime
         rows = _rows(title, body)
         db.execute("DELETE FROM notes_fts WHERE name = ?", (name,))
         db.execute("DELETE FROM hits_fts WHERE name = ?", (name,))
@@ -181,7 +154,7 @@ def _sync(db: sqlite3.Connection, notes_dir: Path) -> None:
         db.execute(
             "INSERT OR REPLACE INTO files (name, mtime, title, date, app, ts) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (name, mtime, title, date, _front_value(front, "app"), ts),
+            (name, mtime, title, date, notes.frontmatter_fields(text).get("app") or None, ts),
         )
     db.commit()
 
