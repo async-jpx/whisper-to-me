@@ -33,6 +33,12 @@ export interface Brief {
   name: string;
 }
 
+/* Where to land inside a note being opened (a search hit's transcript line). */
+export interface NoteTarget {
+  tab?: "transcript";
+  t?: number;
+}
+
 export interface Toast {
   id: number;
   message: string;
@@ -60,6 +66,8 @@ export interface AppState {
   view: View;
   currentNote: string | null;
   currentNoteMd: string | null;
+  /* Set by openNote(name, target); the note view consumes it. */
+  pendingNoteTarget: NoteTarget | null;
   editing: boolean;
   /* Bumped when the note view must re-render its HTML (open handles itself
      via currentNote; save bumps this). A checkbox toggle updates
@@ -77,6 +85,8 @@ export interface AppState {
   archived: NoteMeta[];
   searchResults: SearchResult[] | null; // null = no active search
   templates: Template[];
+  /* The user's configured default template (Settings), null = none. */
+  defaultTemplate: string | null;
   // -- shared UI -------------------------------------------------------------
   toasts: Toast[];
   confirm: ConfirmRequest | null;
@@ -102,7 +112,7 @@ export interface AppState {
   navigate(view: Exclude<View, "note">): Promise<void>;
   setDrawerOpen(open: boolean): void;
   openLive(): void;
-  openNote(name: string): Promise<void>;
+  openNote(name: string, target?: NoteTarget): Promise<void>;
   forgetOpenNote(name: string): void;
   setEditing(editing: boolean, draft?: string | null): void;
   setEditorDraft(draft: string): void;
@@ -127,6 +137,7 @@ export const useStore = create<AppState>()((set, get) => ({
   view: "home",
   currentNote: null,
   currentNoteMd: null,
+  pendingNoteTarget: null,
   editing: false,
   noteRenderSeq: 0,
   editorDraft: null,
@@ -136,6 +147,7 @@ export const useStore = create<AppState>()((set, get) => ({
   archived: [],
   searchResults: null,
   templates: [],
+  defaultTemplate: null,
   toasts: [],
   confirm: null,
 
@@ -225,7 +237,7 @@ export const useStore = create<AppState>()((set, get) => ({
   openLive() {
     void get().navigate("live");
   },
-  async openNote(name) {
+  async openNote(name, target) {
     const s = get();
     if (s.editorDirty() && !(await s.confirmDialog("Discard your unsaved edits?"))) {
       return;
@@ -235,6 +247,7 @@ export const useStore = create<AppState>()((set, get) => ({
       set({
         currentNote: name,
         currentNoteMd: mdText,
+        pendingNoteTarget: target ?? null,
         editing: false,
         editorDraft: null,
         view: "note",
@@ -311,7 +324,8 @@ export const useStore = create<AppState>()((set, get) => ({
   },
   async loadTemplates() {
     try {
-      set({ templates: await api.templates() });
+      const [templates, settings] = await Promise.all([api.templates(), api.settings()]);
+      set({ templates, defaultTemplate: settings.templates.default });
     } catch {
       /* non-critical: the Auto option alone still works */
     }

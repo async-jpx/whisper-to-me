@@ -236,7 +236,7 @@ def save_note(
     body = [
         frontmatter(title, started, attendees, app) + f"# {title}",
         "",
-        f"*Recorded {started:%A %d %B %Y, %H:%M} — whisper-to-me*",
+        f"*Recorded {started:%A %d %B %Y, %H:%M} with Hush*",
         "",
     ]
     if summary:

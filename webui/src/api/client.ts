@@ -3,6 +3,7 @@
 
 import type {
   ExportConfig,
+  NewTemplate,
   NoteMeta,
   SearchResult,
   Settings,
@@ -67,19 +68,35 @@ function parseNoteMeta(w: WireNoteMeta): NoteMeta {
   };
 }
 
-type WireSettings = Omit<Settings, "recording"> & Partial<Pick<Settings, "recording">>;
+type WireSettings = Omit<Settings, "recording" | "templates"> &
+  Partial<Pick<Settings, "recording" | "templates">>;
 
 function parseSettings(w: WireSettings): Settings {
-  return { ...w, recording: w.recording ?? { keep_audio: false } };
+  return {
+    ...w,
+    recording: w.recording ?? { keep_audio: false },
+    templates: w.templates ?? { default: null },
+  };
 }
 
 const note = (name: string) => `/api/notes/${encodeURIComponent(name)}`;
 const archived = (name: string) => `/api/archived/${encodeURIComponent(name)}`;
+const template = (name: string) => `/api/templates/${encodeURIComponent(name)}`;
 
 export const api = {
   // -- status / session -------------------------------------------------
   status: () => getJson<Status>("/api/status"),
   templates: () => getJson<Template[]>("/api/templates"),
+  createTemplate: (t: NewTemplate) => sendJson<Template>("POST", "/api/templates", t),
+  deleteTemplate: async (name: string) => {
+    await request(template(name), { method: "DELETE" }); // 204: no body to parse
+  },
+  favoriteTemplate: (name: string, favorite: boolean) =>
+    sendJson<Template>("PUT", `${template(name)}/favorite`, { favorite }),
+  setDefaultTemplate: async (name: string | null) =>
+    parseSettings(
+      await sendJson<WireSettings>("PUT", "/api/settings/default-template", { name }),
+    ),
   recordStart: (title: string | null, template: string | null) =>
     sendJson<void>("POST", "/api/record/start", { title, template }),
   recordStop: () => sendJson<void>("POST", "/api/record/stop", {}),
