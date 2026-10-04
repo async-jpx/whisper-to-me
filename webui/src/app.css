@@ -22,6 +22,8 @@
   --danger-tint: #fbe9e9;
   --success: #0f9960;
   --success-tint: #e3f5ec;
+  --star: #e8a317;
+  --mark: #fde9a8;
   --scrim: rgba(0, 0, 0, 0.35);
   --shadow-composer: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.06);
   --shadow-pop: 0 10px 34px rgba(0, 0, 0, 0.14);
@@ -56,6 +58,8 @@
     --danger-tint: #3d2324;
     --success: #4cc38a;
     --success-tint: #183427;
+    --star: #f5c04a;
+    --mark: #5c4a12;
     --scrim: rgba(0, 0, 0, 0.55);
     --shadow-composer: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
     --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.5);
@@ -565,23 +569,6 @@ select:focus-visible {
 .note-action .icon {
   width: 15px;
   height: 15px;
-}
-
-.note-snippet {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-}
-
-.note-snippet mark {
-  background: var(--accent-tint);
-  color: inherit;
-  border-radius: 3px;
-  padding: 0 1px;
 }
 
 .live-item {
@@ -1820,6 +1807,399 @@ select:focus-visible {
   color: var(--text-tertiary);
 }
 
+.badge-accent {
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.form-error {
+  margin: 14px 0 0;
+  padding: 9px 12px;
+  border-radius: var(--radius-item);
+  background: var(--danger-tint);
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* ---------- templates page ---------- */
+
+.tpl-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.tpl-head .btn {
+  flex-shrink: 0;
+  margin-top: 12px;
+}
+
+.tpl-head .btn .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.tpl-head p strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tpl-form {
+  margin-top: 22px;
+}
+
+.tpl-form-hint {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+}
+
+.tpl-form-hint code,
+.tpl-body pre {
+  font-family: var(--font-mono);
+}
+
+.tpl-form-hint code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.tpl-editor {
+  min-height: 15rem;
+  max-height: 26rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.tpl-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+
+.tpl-editor .cm-content {
+  font-family: var(--font-mono);
+}
+
+.tpl-row {
+  padding: 14px 14px 14px 8px;
+}
+
+.tpl-row + .tpl-row {
+  border-top: 1px solid var(--border);
+}
+
+.tpl-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+}
+
+.tpl-star {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-tertiary);
+  transition: color 0.15s, background-color 0.15s, transform 0.15s;
+}
+
+.tpl-star:not(:disabled):hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.tpl-star .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.tpl-star.on,
+.tpl-star.on:not(:disabled):hover {
+  color: var(--star);
+}
+
+.tpl-star.on .icon {
+  fill: currentColor;
+}
+
+.tpl-star:not(:disabled):active {
+  transform: scale(0.88);
+}
+
+.tpl-star:disabled {
+  cursor: progress;
+}
+
+.tpl-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px 4px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.tpl-title-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tpl-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tpl-origin {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.tpl-desc {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.tpl-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.tpl-section {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.tpl-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 2px;
+}
+
+.tpl-actions .btn {
+  transition: opacity 0.15s, background-color 0.15s;
+}
+
+/* One "Set as default" per row is noise; show it where the pointer is. */
+@media (hover: hover) {
+  .tpl-row:not(:hover):not(:focus-within):not(.is-open) .tpl-actions .btn {
+    opacity: 0;
+  }
+}
+
+.tpl-actions .note-action:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+
+.tpl-chevron .icon {
+  transition: transform 0.2s;
+}
+
+.tpl-row.is-open .tpl-chevron .icon {
+  transform: rotate(180deg);
+}
+
+.tpl-body {
+  margin: 10px 0 2px 44px;
+}
+
+.tpl-readonly {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.tpl-body pre {
+  max-height: 22rem;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+/* ---------- sidebar search results ---------- */
+
+.search-kbd {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.search-field:focus-within .search-kbd {
+  display: none;
+}
+
+.sr-group {
+  padding: 2px 0 8px;
+}
+
+.sr-group + .sr-group {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.sr-head,
+.sr-hit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+}
+
+.sr-head {
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: var(--radius-item);
+}
+
+.sr-head:hover,
+.sr-head.is-active {
+  background: var(--bg-hover);
+}
+
+.sr-head.is-active {
+  background: var(--bg-active);
+}
+
+.sr-title {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sr-meta {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.sr-hit {
+  width: calc(100% - 12px);
+  gap: 3px;
+  margin: 1px 0 1px 12px;
+  padding: 6px 10px 7px;
+  border-left: 2px solid var(--border);
+  border-radius: 0 var(--radius-item) var(--radius-item) 0;
+}
+
+.sr-hit.is-active {
+  border-left-color: var(--accent);
+  background: var(--bg-active);
+}
+
+.sr-hit-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sr-stamp,
+.sr-kind {
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-stamp {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+.sr-kind {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.sr-speaker {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sr-snippet {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.sr-title mark,
+.sr-snippet mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: var(--mark);
+  color: var(--text);
+}
+
+.sr-empty {
+  padding: 14px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.sr-empty p {
+  margin: 0;
+}
+
+.sr-empty .sr-empty-title {
+  margin-bottom: 4px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
 /* ---------- toasts ---------- */
 
 .toasts {
@@ -1999,9 +2379,12 @@ select:focus-visible {
     visibility: hidden;
   }
 
+  /* Visible from the first frame of opening, so ⌘K can focus the search
+     field at once; closing still waits for the slide to finish. */
   .sidebar.is-open {
     transform: none;
     visibility: visible;
+    transition: transform 0.22s ease, visibility 0s;
   }
 
   .sb-icon-btn.sb-close {

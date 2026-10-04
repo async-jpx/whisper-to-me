@@ -5,6 +5,8 @@ import { useState } from "react";
 import { useStore } from "../store";
 import { canStartRecording, isActive } from "../api/types";
 import { startRecording } from "../lib/record";
+import { sortTemplates, templateLabel } from "../lib/templates";
+import type { Template } from "../api/types";
 import { Composer } from "./Composer";
 import { Logo } from "./Logo";
 
@@ -12,6 +14,7 @@ export function HomeView() {
   const status = useStore((s) => s.status);
   const recordPending = useStore((s) => s.recordPending);
   const templates = useStore((s) => s.templates);
+  const defaultTemplate = useStore((s) => s.defaultTemplate);
   const openLive = useStore((s) => s.openLive);
   const [title, setTitle] = useState("");
   const [template, setTemplate] = useState("");
@@ -28,6 +31,19 @@ export function HomeView() {
       </div>
     );
   }
+
+  const configured = templates.find((t) => t.name === defaultTemplate);
+  const autoHelp = configured
+    ? `Auto uses your default, ${templateLabel(configured)}`
+    : "Auto picks a template from the title";
+  const sorted = sortTemplates(templates);
+  const favorites = sorted.filter((t) => t.favorite);
+  const others = sorted.filter((t) => !t.favorite);
+  const option = (t: Template) => (
+    <option key={t.name} value={t.name}>
+      {templateLabel(t) + (t.name === defaultTemplate ? " · default" : "")}
+    </option>
+  );
 
   const start = (value: string) => {
     void startRecording(value.replace(/\s+/g, " ").trim() || null, template || null);
@@ -51,18 +67,23 @@ export function HomeView() {
         autoFocus
         footer={
           <>
-            <label className="pill-select">
+            <label className="pill-select" title={template ? undefined : autoHelp}>
               <span>Template</span>
               <select value={template} onChange={(e) => setTemplate(e.target.value)}>
-                <option value="">Auto</option>
-                {templates.map((t) => (
-                  <option key={t.name} value={t.name}>
-                    {t.title || t.name}
-                  </option>
-                ))}
+                <option value="">{configured ? `Auto · ${templateLabel(configured)}` : "Auto"}</option>
+                {favorites.length > 0 ? (
+                  <>
+                    <optgroup label="Favorites">{favorites.map(option)}</optgroup>
+                    <optgroup label="All templates">{others.map(option)}</optgroup>
+                  </>
+                ) : (
+                  others.map(option)
+                )}
               </select>
             </label>
-            <span className="composer-hint">Press Enter to start recording</span>
+            <span className="composer-hint">
+              {template ? "Press Enter to start recording" : `${autoHelp}. Enter starts recording.`}
+            </span>
           </>
         }
       />

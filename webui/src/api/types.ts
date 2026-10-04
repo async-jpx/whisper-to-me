@@ -87,8 +87,14 @@ export interface Template {
   name: string;
   title: string;
   description: string;
-  builtin: boolean;
+  builtin: boolean; // built-ins are read-only: no edit, no delete
+  favorite: boolean;
+  /* The configured default, or the built-in "default" when none is set. */
+  is_default: boolean;
+  body: string; // the summary sections the template produces
 }
+
+export type NewTemplate = Pick<Template, "name" | "description" | "body">;
 
 export interface ChatSource {
   n: number;
@@ -108,4 +114,6 @@ export interface Settings {
   /* True when a token is on file. The token itself is never sent to the page. */
   notion_token_set: boolean;
   recording: { keep_audio: boolean };
+  /* The user's chosen default template; null = none chosen. */
+  templates: { default: string | null };
 }

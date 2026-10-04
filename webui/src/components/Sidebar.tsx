@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useStore, type View } from "../store";
 import { api, ApiError } from "../api/client";
 import { isActive } from "../api/types";
@@ -6,6 +6,7 @@ import type { NoteMeta, SearchResult } from "../api/types";
 import { groupNotes, rowTime, type GroupMode } from "../lib/noteGroups";
 import { Icon, type IconName } from "./Icons";
 import { Logo } from "./Logo";
+import { SearchResults, searchItems, type SearchItem } from "./SearchResults";
 
 type NoteRef = Pick<NoteMeta, "name" | "title">;
 
@@ -27,20 +28,7 @@ function writeGroupMode(mode: GroupMode): void {
   }
 }
 
-interface SnippetPart {
-  text: string;
-  marked: boolean;
-}
-
-function parseSnippet(snippet: string): SnippetPart[] {
-  const parts: SnippetPart[] = [];
-  let marked = false;
-  for (const part of snippet.split(/[\uE000\uE001]/)) {
-    if (part) parts.push({ text: part, marked });
-    marked = !marked;
-  }
-  return parts;
-}
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 
 function busyMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError && err.status === 409
@@ -93,12 +81,39 @@ export function Sidebar() {
   const [groupMode, setGroupMode] = useState<GroupMode>(readGroupMode);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchSeqRef = useRef(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [activeHit, setActiveHit] = useState(0);
+  const items = useMemo(() => searchItems(searchResults ?? []), [searchResults]);
 
   useEffect(() => {
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
   }, []);
+
+  useEffect(() => setActiveHit(0), [searchResults]);
+
+  // ⌘K / Ctrl+K focuses search from anywhere, opening the drawer on narrow
+  // windows and leaving the archive view (which unmounts the field). The
+  // focus waits for the commit, when the field exists and the drawer is open.
+  const [focusSearchSeq, setFocusSearchSeq] = useState(0);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return;
+      e.preventDefault();
+      const s = useStore.getState();
+      if (s.viewArchived) s.setSidebarTab(false);
+      s.setDrawerOpen(true);
+      setFocusSearchSeq((n) => n + 1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    if (focusSearchSeq === 0) return;
+    searchRef.current?.focus();
+    searchRef.current?.select();
+  }, [focusSearchSeq]);
 
   const groups = useMemo(() => groupNotes(notes, groupMode, new Date()), [notes, groupMode]);
 
@@ -190,18 +205,49 @@ export function Sidebar() {
     }
   };
 
-  const noteRow = (note: NoteRef, meta: string, snippet?: string) => (
+  const openItem = ({ result, hit }: SearchItem) => {
+    if (hit?.kind === "line" && hit.t !== null) {
+      void openNote(result.name, { tab: "transcript", t: hit.t });
+    } else {
+      void openNote(result.name);
+    }
+  };
+
+  const onSearchKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowUp": {
+        if (items.length === 0) return;
+        e.preventDefault();
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        setActiveHit((i) => (i + step + items.length) % items.length);
+        return;
+      }
+      case "Enter": {
+        const item = items[activeHit];
+        if (!item) return;
+        e.preventDefault();
+        openItem(item);
+        return;
+      }
+      case "Escape":
+        if (searchInput) {
+          e.preventDefault();
+          e.stopPropagation(); // the first Esc clears; the drawer closes on the next
+          clearSearch();
+        } else {
+          e.currentTarget.blur();
+        }
+        return;
+    }
+  };
+
+  const noteRow = (note: NoteRef, meta: string) => (
     <li key={note.name}>
       <div className={"note-row" + (currentNote === note.name ? " active" : "")}>
         <button className="note-item" onClick={() => void openNote(note.name)}>
           <span className="note-title">{note.title}</span>
-          {snippet && (
-            <span className="note-snippet">
-              {parseSnippet(snippet).map((part, i) =>
-                part.marked ? <mark key={i}>{part.text}</mark> : <span key={i}>{part.text}</span>,
-              )}
-            </span>
-          )}
         </button>
         <span className="note-meta">{meta}</span>
         <div className="note-actions">
@@ -270,20 +316,6 @@ export function Sidebar() {
       )}
     </>
   );
-
-  const renderSearch = (results: SearchResult[]) =>
-    results.length === 0 ? (
-      <p className="notes-empty">No matches.</p>
-    ) : (
-      <>
-        <div className="sb-section-head">
-          <span className="sb-group-label">Results</span>
-        </div>
-        <ul className="notes-list">
-          {results.map((r) => noteRow(r, "", r.hits.find((h) => h.kind !== "title")?.snippet))}
-        </ul>
-      </>
-    );
 
   const renderGroups = () => (
     <>
@@ -360,25 +392,39 @@ export function Sidebar() {
           <label className="search-field">
             <Icon name="search" />
             <input
+              ref={searchRef}
               type="search"
               placeholder="Search notes"
               aria-label="Search notes"
+              role="combobox"
+              aria-expanded={searchResults !== null}
+              aria-controls="search-results"
+              aria-autocomplete="list"
+              aria-activedescendant={searchResults ? items[activeHit]?.id : undefined}
               autoComplete="off"
               spellCheck={false}
               value={searchInput}
               onChange={(e) => handleSearchInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") clearSearch();
-              }}
+              onKeyDown={onSearchKey}
             />
+            {!searchInput && <kbd className="search-kbd">{IS_MAC ? "⌘K" : "Ctrl K"}</kbd>}
           </label>
         )}
         <div className="sb-scroll">
-          {viewArchived
-            ? renderArchived()
-            : searchResults !== null
-              ? renderSearch(searchResults)
-              : renderGroups()}
+          {viewArchived ? (
+            renderArchived()
+          ) : searchResults !== null ? (
+            <SearchResults
+              query={searchInput.trim()}
+              results={searchResults}
+              items={items}
+              active={activeHit}
+              onActivate={setActiveHit}
+              onOpen={openItem}
+            />
+          ) : (
+            renderGroups()
+          )}
         </div>
         <div className="sb-footer">
           <button

@@ -78,7 +78,7 @@ tags: [meeting]
 ---
 # Exporter sync
 
-*Recorded Tuesday — whisper-to-me*
+*Recorded Tuesday with Hush*
 
 ## TL;DR
 We agreed the release ships soon.
