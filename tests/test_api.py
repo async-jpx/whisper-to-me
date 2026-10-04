@@ -26,15 +26,19 @@ NOTE = """\
 
 
 class ScriptedProbe:
-    def __init__(self, trigger=None, hint=None):
+    def __init__(self, trigger=None, hint=None, app=None):
         self.trigger = trigger
         self.hint = hint
+        self.app = app
 
     def detect(self):
         return self.trigger
 
     def title_hint(self, trigger):
         return self.hint
+
+    def meeting_app(self, trigger):
+        return self.app
 
 
 def _make_live(manager, title, started):
@@ -278,6 +282,7 @@ def test_settings_get_defaults(client, config_path):
         "notion_configured": False,
         "notion_database_id": None,
         "notion_token_set": False,
+        "recording": {"keep_audio": False},
     }
 
 
@@ -307,6 +312,7 @@ def test_connect_notion_stores_pair_without_leaking_token(client, config_path):
         "notion_configured": True,
         "notion_database_id": "db1",
         "notion_token_set": True,
+        "recording": {"keep_audio": False},
     }
     assert "ntn_super_secret" not in resp.text  # the token never goes over the wire
 

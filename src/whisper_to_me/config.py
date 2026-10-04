@@ -18,6 +18,9 @@ sent by the sanctioned per-note push (see notion_export.py).
     [notion]                            # the ONE sanctioned network export:
     token = "ntn_..."                   # off unless both keys are set, and
     database_id = "..."                 # only ever pushed per-note by the user
+
+    [recording]
+    keep_audio = false                  # keep each meeting's audio (local m4a)
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ class Config:
     obsidian_vault: Path | None = None
     notion_token: str | None = None
     notion_database_id: str | None = None
+    keep_audio: bool = False
 
     @property
     def notion_configured(self) -> bool:
@@ -69,17 +73,21 @@ def load_config(path: Path | None = None) -> Config:
         obsidian = {}
     if not isinstance(notion, dict):
         notion = {}
+    recording = data.get("recording")
+    if not isinstance(recording, dict):
+        recording = {}
     return Config(
         notes_dir=_path(data.get("notes_dir")),
         obsidian_vault=_path(obsidian.get("vault")),
         notion_token=_string(notion.get("token")),
         notion_database_id=_string(notion.get("database_id")),
+        keep_audio=recording.get("keep_audio") is True,
     )
 
 
 # -- writing (UI Settings → Connections) --------------------------------------
 # The UI edits the same file hand-editors use. We keep a tiny TOML writer rather
-# than pull in a dependency: the schema is small and fully string-valued, so the
+# than pull in a dependency: the schema is small (strings and one bool), so the
 # risk is low. Comments are not preserved on rewrite (documented in the UI).
 
 # UI-editable field -> where it lives in the file. Top-level keys have no table.
@@ -88,6 +96,7 @@ _FIELDS: dict[str, tuple[str | None, str]] = {
     "obsidian_vault": ("obsidian", "vault"),
     "notion_token": ("notion", "token"),
     "notion_database_id": ("notion", "database_id"),
+    "keep_audio": ("recording", "keep_audio"),
 }
 
 
@@ -129,11 +138,12 @@ def _dump_toml(data: dict) -> str:
     return text + "\n" if text else ""
 
 
-def save_config(updates: dict[str, str | None], path: Path | None = None) -> Config:
+def save_config(updates: dict[str, str | bool | None], path: Path | None = None) -> Config:
     """Merge `updates` into the config file and write it back atomically.
 
     Keys are the Config field names in `_FIELDS`; a falsy/blank value clears
-    that setting (and prunes a table that becomes empty). Other keys already in
+    that setting (and prunes a table that becomes empty); a bool is stored
+    as-is, except False, the default, which clears it too. Other keys already in
     the file are preserved. The file may hold a Notion token, so it is written
     0600. Purely local disk I/O — this adds no network path."""
     path = path or CONFIG_PATH
@@ -145,7 +155,10 @@ def save_config(updates: dict[str, str | None], path: Path | None = None) -> Con
 
     for field, value in updates.items():
         table, key = _FIELDS[field]
-        clean = value.strip() if isinstance(value, str) else None
+        if isinstance(value, bool):
+            clean = value or None
+        else:
+            clean = value.strip() if isinstance(value, str) else None
         target = data
         if table is not None:
             existing = data.get(table)

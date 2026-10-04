@@ -99,6 +99,7 @@ def cmd_record(args) -> None:
         keep_echoes=args.keep_echoes,
         use_aec=not args.no_aec,
         diarize=args.diarize,
+        keep_audio=load_config().keep_audio,
     )
     _finish(args, transcript_lines, started, title)
 
@@ -120,6 +121,7 @@ def cmd_simulate(args) -> None:
         keep_echoes=args.keep_echoes,
         use_aec=not args.no_aec,
         diarize=args.diarize,
+        keep_audio=load_config().keep_audio,
     )
     _finish(args, transcript_lines, started, title)
 
