@@ -342,6 +342,25 @@ Key invariants:
   the KVO subclass, so the overlay is created once and never closed or
   destroyed (hide/order-out only); tearing it down is unexercised. Verify with
   CGWindowList (layer 25) + frontmost app over a full-screen Terminal.
+- **An unsigned (ad-hoc) bundle loses its TCC grants on every rebuild**
+  (desktop tauri.conf.json `bundle.macOS.signingIdentity`). The designated
+  requirement of ad-hoc code is its cdhash, so TCC treats each `tauri build`
+  as a new app. System Settings still shows the toggle on, but the
+  system-audio helper exits with code 2 ("macOS denied…"). Tauri signs the
+  bundle with "whisper-to-me local signing", a self-signed cert in the login
+  keychain, so the requirement becomes the identifier plus the certificate
+  leaf and survives rebuilds. To recreate the cert on a new machine, generate
+  it with openssl (`extendedKeyUsage=codeSigning`) and run `security import
+  … -T /usr/bin/codesign`. It can stay untrusted, and none of this needs
+  admin. After any signing change, run `tccutil reset ScreenCapture
+  io.github.asyncjpx.whispertome` and grant the permission again. Toggling
+  the switch off and on does not refresh the stored requirement.
+- **Keep `hardenedRuntime: false`** (desktop tauri.conf.json). Tauri turns
+  hardened runtime on whenever a signing identity is set. A hardened app
+  without the `com.apple.security.device.audio-input` entitlement gets silent
+  mic buffers, with no prompt and no error, so every transcript comes out
+  empty. Notarization is the only reason to harden, and a self-signed cert
+  can't be notarized.
 - **Notifications carry the app's identity only from a bundled build**: the
   bare `target/debug` binary's notifications are attributed to the terminal
   app (name + icon). Test identity with `npx tauri build --bundles app` and

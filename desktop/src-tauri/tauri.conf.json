@@ -16,6 +16,10 @@
     "active": true,
     "targets": ["app", "dmg"],
     "category": "Productivity",
+    "macOS": {
+      "signingIdentity": "whisper-to-me local signing",
+      "hardenedRuntime": false
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
