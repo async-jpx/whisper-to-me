@@ -126,11 +126,16 @@ async function boot(): Promise<void> {
   }
 }
 
-/* Deep links: #note=<name>, set by the desktop tray ("Open last note"). The
-   tray clears the hash first so re-opening the same note still fires. */
+/* Deep links: #note=<name>, set by the desktop tray ("Open last note"), and
+   #note=<name>&t=<seconds> for a moment in its transcript. The tray clears
+   the hash first so re-opening the same note still fires. */
 function applyNoteHash(): void {
-  const m = location.hash.match(/^#note=(.+)$/);
-  if (m && m[1]) void useStore.getState().openNote(decodeURIComponent(m[1]));
+  const m = location.hash.match(/^#note=([^&]+)(?:&t=(\d+(?:\.\d+)?))?$/);
+  if (!m || !m[1]) return;
+  const name = decodeURIComponent(m[1]);
+  void useStore
+    .getState()
+    .openNote(name, m[2] ? { tab: "transcript", t: Number(m[2]) } : { tab: "summary" });
 }
 
 export function startApp(): void {

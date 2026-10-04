@@ -65,6 +65,22 @@ export interface NoteMeta {
   duration_s: number | null; // last transcript stamp, null if none
 }
 
+/* GET /api/notes/{name}/transcript: the note's transcript section, parsed
+   server-side. `t` is whole seconds from the meeting start, which is also
+   the position in the kept recording. */
+export interface NoteLine {
+  t: number;
+  stamp: string; // "0:03:12"
+  speaker: string | null; // null when only one source was recorded
+  text: string;
+}
+
+/* GET /api/notes/{name}/audio/peaks: ~2 values per second, normalized 0..1. */
+export interface AudioPeaks {
+  duration_s: number;
+  peaks: number[];
+}
+
 /* GET /api/search: one result per note, at most ~3 hits each. Snippets are
    bracketed by U+E000/U+E001 private-use markers; render as plain text and
    turn only the marker pairs into <mark>. */

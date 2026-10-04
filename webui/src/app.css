@@ -1398,49 +1398,6 @@ select:focus-visible {
   cursor: pointer;
 }
 
-.transcript-fold {
-  margin-top: 36px;
-  padding: 0 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-}
-
-.transcript-fold[open] {
-  padding-bottom: 14px;
-}
-
-.transcript-fold summary {
-  padding: 14px 0;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.transcript-fold summary:hover {
-  color: var(--accent);
-}
-
-.transcript-fold p {
-  font-size: 14px;
-}
-
-.md-stamp {
-  font-size: 0.85em;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  scroll-margin: 30vh;
-}
-
-.md-stamp.flash {
-  animation: stamp-flash 1.6s ease-out;
-}
-
-@keyframes stamp-flash {
-  0%, 40% { background: var(--accent-tint); box-shadow: 0 0 0 4px var(--accent-tint); }
-  100% { background: transparent; box-shadow: none; }
-}
-
 .stamp-link {
   color: var(--accent);
   text-decoration: none;
@@ -1449,6 +1406,408 @@ select:focus-visible {
 
 .stamp-link:hover {
   text-decoration: underline;
+}
+
+/* ---------- note page: header, tabs, transcript, player ---------- */
+
+.note-head {
+  padding: 20px 0 4px;
+}
+
+.note-head-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.022em;
+  overflow-wrap: anywhere;
+}
+
+.note-head-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+.badge-rec-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 10px;
+}
+
+.badge-rec-bars i {
+  width: 2px;
+  height: 5px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.badge-rec-bars i:nth-child(2) {
+  height: 10px;
+}
+
+/* Tabs + note actions, pinned while the note scrolls. */
+.note-bar {
+  --note-bar-h: 50px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: var(--note-bar-h);
+  margin-top: 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.note-bar .note-tabs {
+  align-self: stretch;
+  margin: 0;
+  border-bottom: 0;
+}
+
+.note-tabs .tab {
+  margin-bottom: -1px;
+  font-size: 14.5px;
+}
+
+.note-actions-bar {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.export-item-danger {
+  color: var(--danger);
+}
+
+#note-panel-summary .note-view {
+  padding-top: 8px;
+}
+
+.transcript-tab {
+  padding-top: 4px;
+}
+
+/* The player stays under the tab bar while the transcript scrolls. */
+.player-dock {
+  position: sticky;
+  top: 50px;
+  z-index: 2;
+  padding: 14px 0 10px;
+  background: var(--bg);
+}
+
+.player-dock::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -14px;
+  height: 14px;
+  background: linear-gradient(var(--bg), transparent);
+  pointer-events: none;
+}
+
+.player {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow-composer);
+}
+
+.player-play {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 4px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.player-play:hover {
+  background: var(--accent-hover);
+}
+
+.player-play:active {
+  transform: scale(0.95);
+}
+
+.player-play .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.player-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.wave {
+  height: 44px;
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.wave svg {
+  display: block;
+}
+
+.wave:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.wave-rest {
+  fill: var(--border-strong);
+}
+
+.wave-played {
+  fill: var(--accent);
+}
+
+.player-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+}
+
+.player-time {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.player-total {
+  color: var(--text-tertiary);
+}
+
+.player-follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  margin: 0 auto;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.player-follow .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.player-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.player-follow + .player-tools {
+  margin-left: 0;
+}
+
+.player-tool {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+}
+
+.player-tool:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.player-tool .icon {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.7;
+}
+
+.player-rate {
+  min-width: 40px;
+  font-size: 12.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-hint {
+  margin: 14px 0 6px;
+  padding: 12px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.tl-hint .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.tl-empty {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.tl {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tl-line {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 7px 12px 7px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.6;
+  text-align: left;
+  user-select: text;
+  scroll-margin: 30vh 0;
+  transition: background-color 0.2s;
+}
+
+.tl-line.is-turn {
+  margin-top: 6px;
+}
+
+button.tl-line:hover {
+  background: var(--bg-hover);
+}
+
+.tl-time {
+  padding-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+button.tl-line:hover .tl-time {
+  color: var(--accent);
+}
+
+.tl-body .chip {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: 1px;
+  line-height: 1.5;
+}
+
+.tl-line.is-active {
+  background: var(--accent-tint);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.tl-line.is-active .chip-you {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.tl-line.is-active .tl-time {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tl-line.is-cued {
+  animation: line-cue 2.4s ease-out;
+}
+
+@keyframes line-cue {
+  0%, 45% { background: var(--accent-tint); box-shadow: inset 3px 0 0 var(--accent); }
+  100% { background: transparent; box-shadow: inset 3px 0 0 transparent; }
+}
+
+/* Diarized speakers (Speaker A, B, …), four hues that cycle. */
+.chip-spk-0 { --spk: #0e7f86; }
+.chip-spk-1 { --spk: #a8650f; }
+.chip-spk-2 { --spk: #b83b66; }
+.chip-spk-3 { --spk: #5b4fc4; }
+
+@media (prefers-color-scheme: dark) {
+  .chip-spk-0 { --spk: #5ccfd4; }
+  .chip-spk-1 { --spk: #f0b45a; }
+  .chip-spk-2 { --spk: #f2809f; }
+  .chip-spk-3 { --spk: #a99cf2; }
+}
+
+.chip-spk-0,
+.chip-spk-1,
+.chip-spk-2,
+.chip-spk-3 {
+  background: color-mix(in srgb, var(--spk) 14%, transparent);
+  color: var(--spk);
+}
+
+@media (max-width: 560px) {
+  .note-head-title {
+    font-size: 25px;
+  }
+  .note-bar .btn-sm {
+    padding: 0 10px;
+  }
+  .tl-line {
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 8px;
+    padding-left: 6px;
+  }
 }
 
 /* ---------- export menu ---------- */
@@ -2090,6 +2449,7 @@ select:focus-visible {
   .drawer-scrim,
   .topbar,
   .note-toolbar,
+  .note-bar,
   .toasts {
     display: none !important;
   }

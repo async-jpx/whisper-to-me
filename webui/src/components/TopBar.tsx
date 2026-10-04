@@ -6,16 +6,9 @@ import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import { canStop, type Status } from "../api/types";
 import { stopRecording } from "../lib/record";
+import { formatClock } from "../lib/time";
 import { Icon } from "./Icons";
 import { Logo } from "./Logo";
-
-function formatElapsed(totalSeconds: number): string {
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  const ss = String(seconds).padStart(2, "0");
-  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${ss}` : `${minutes}:${ss}`;
-}
 
 function statusText(status: Status): string | null {
   switch (status.state) {
@@ -46,7 +39,7 @@ function useElapsed(status: Status): string {
       return;
     }
     const startedMs = Date.now() - elapsedS * 1000;
-    const tick = () => setElapsed(formatElapsed((Date.now() - startedMs) / 1000));
+    const tick = () => setElapsed(formatClock((Date.now() - startedMs) / 1000));
     tick();
     const timer = setInterval(tick, 500);
     return () => clearInterval(timer);

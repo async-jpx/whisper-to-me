@@ -287,11 +287,13 @@ Key invariants:
   `input.task-list-item-checkbox` in DOM order PATCHes the nth task line —
   it only holds because markdown-it-task-lists' exact output matches the
   server's `_TASK_RE`. Don't "React-ify" the rendered note: the article is
-  filled imperatively (innerHTML + foldTranscript/anchorStamps) and is
+  filled imperatively (innerHTML + hideNonSummary/linkStamps) and is
   deliberately NOT subscribed to `currentNoteMd` — a checkbox toggle
-  refetches the markdown, and re-rendering there collapses the transcript
-  fold and resets scroll. Re-renders happen only on note open
-  (`currentNote`) and save (`noteRenderSeq`).
+  refetches the markdown, and re-rendering there resets scroll. Re-renders
+  happen only on note open (`currentNote`) and save (`noteRenderSeq`). The
+  Summary tab *hides* the H1, the "Recorded …" line and the `## Transcript`
+  section (the Transcript tab shows them from GET …/transcript); it must
+  never remove them from the DOM, or a checkbox below them shifts index.
 - **The webui editor keymap needs `Prec.high`** (lib/cm.ts): the editors are
   CodeMirror 6 (`<MarkdownEditor>`, note editor + scratchpad — CM's native
   history replaced the old execCommand hack). @uiw/react-codemirror registers

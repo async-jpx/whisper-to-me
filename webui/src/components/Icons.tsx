@@ -18,6 +18,15 @@ const PATHS = {
   search: '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
   menu: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="14" y2="17"/>',
   arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+  arrowDown: '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
+  play: '<path d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10.2-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6z" fill="currentColor" stroke="none"/>',
+  pause:
+    '<rect x="6" y="5" width="4" height="14" rx="1.4" fill="currentColor" stroke="none"/><rect x="14" y="5" width="4" height="14" rx="1.4" fill="currentColor" stroke="none"/>',
+  back10:
+    '<path d="M12 5a8 8 0 1 1-7.4 5"/><polyline points="14 2.5 11.5 5 14 7.5"/><text x="12" y="16.2" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
+  fwd10:
+    '<path d="M12 5a8 8 0 1 0 7.4 5"/><polyline points="10 2.5 12.5 5 10 7.5"/><text x="12" y="16.2" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
+  more: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
   templates:
     '<rect x="3" y="3" width="18" height="18" rx="3"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
