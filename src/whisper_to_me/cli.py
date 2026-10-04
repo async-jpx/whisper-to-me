@@ -138,6 +138,8 @@ def cmd_transcribe(args) -> None:
 
 
 def cmd_summarize(args) -> None:
+    from . import templates as tmpl
+
     text = Path(args.file).read_text(encoding="utf-8")
     user_notes = Path(args.user_notes).read_text(encoding="utf-8") if args.user_notes else ""
     if not summ.check_model(args.ollama_model):
@@ -149,7 +151,7 @@ def cmd_summarize(args) -> None:
             model=args.ollama_model,
             context=args.context,
             user_notes=user_notes,
-            template=args.template,
+            template=tmpl.resolve_template(args.template, None),
         )
     if title:
         console.print(f"[bold]{title}[/bold]\n")

@@ -1,5 +1,6 @@
 ---
 name: default
+title: "General meeting"
 description: "General meeting — the standard notes layout"
 match: []
 ---

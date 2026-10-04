@@ -10,7 +10,7 @@ from typing import Callable
 
 from rich.console import Console
 
-from . import audio, dedup, notes
+from . import audio, dedup, notes, templates
 from . import summarize as summ
 
 console = Console()
@@ -410,6 +410,7 @@ def summarize_and_save(
             })
         else:
             sink({"type": "summarizing", "model": ollama_model})
+            template = templates.resolve_template(template, title)
             try:
                 summary, inferred_title, facts = summ.summarize_meeting(
                     text,

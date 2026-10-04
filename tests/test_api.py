@@ -278,6 +278,7 @@ def test_settings_get_defaults(client, config_path):
         "notion_configured": False,
         "notion_database_id": None,
         "notion_token_set": False,
+        "templates": {"default": None},
     }
 
 
@@ -307,6 +308,7 @@ def test_connect_notion_stores_pair_without_leaking_token(client, config_path):
         "notion_configured": True,
         "notion_database_id": "db1",
         "notion_token_set": True,
+        "templates": {"default": None},
     }
     assert "ntn_super_secret" not in resp.text  # the token never goes over the wire
 
@@ -924,3 +926,63 @@ def test_a_failing_probe_does_not_end_detection(detecting):
     tc.probe.detect = flaky
     assert _prompt(tc)["trigger"] == "zoom"
     assert len(failures) == 3
+
+
+# -- templates API (Hush redesign) --------------------------------------------
+
+USER_TEMPLATE = {
+    "name": "Design Review",
+    "description": "crit",
+    "body": "## Notes\nx\n\n## Action Items\n- [ ] task\n",
+}
+
+
+def test_templates_list_shape(client):
+    rows = {t["name"]: t for t in client.get("/api/templates").json()}
+    std = rows["standup"]
+    assert std["title"] == "Daily standup" and std["builtin"] is True
+    assert std["favorite"] is False and "## Action Items" in std["body"]
+    assert [n for n, t in rows.items() if t["is_default"]] == ["default"]
+
+
+def test_template_create_delete_roundtrip(client):
+    resp = client.post("/api/templates", json=USER_TEMPLATE)
+    assert resp.status_code == 201
+    created = resp.json()
+    assert (created["name"], created["title"], created["builtin"]) == (
+        "design-review", "Design Review", False,
+    )
+    assert client.post("/api/templates", json=USER_TEMPLATE).status_code == 409
+    assert "design-review" in [t["name"] for t in client.get("/api/templates").json()]
+    assert client.delete("/api/templates/design-review").status_code == 204
+    assert client.delete("/api/templates/design-review").status_code == 404
+    assert "design-review" not in [t["name"] for t in client.get("/api/templates").json()]
+
+
+def test_template_create_validation(client):
+    bad = dict(USER_TEMPLATE, body="## TL;DR\nno tasks\n")
+    assert client.post("/api/templates", json=bad).status_code == 400
+    assert client.post("/api/templates", json=dict(USER_TEMPLATE, name="??")).status_code == 400
+    builtin = dict(USER_TEMPLATE, name="standup")
+    assert client.post("/api/templates", json=builtin).status_code == 409
+
+
+def test_builtin_template_delete_403(client):
+    assert client.delete("/api/templates/standup").status_code == 403
+    assert "standup" in [t["name"] for t in client.get("/api/templates").json()]
+
+
+def test_template_favorite_and_default(client):
+    resp = client.put("/api/templates/standup/favorite", json={"favorite": True})
+    assert resp.status_code == 200 and resp.json()["favorite"] is True
+    assert client.put("/api/templates/nope/favorite", json={"favorite": True}).status_code == 404
+
+    resp = client.put("/api/settings/default-template", json={"name": "standup"})
+    assert resp.json()["templates"] == {"default": "standup"}
+    rows = {t["name"]: t for t in client.get("/api/templates").json()}
+    assert rows["standup"]["is_default"] and not rows["default"]["is_default"]
+    assert rows["standup"]["favorite"]
+
+    assert client.put("/api/settings/default-template", json={"name": "nope"}).status_code == 400
+    resp = client.put("/api/settings/default-template", json={"name": None})
+    assert resp.json()["templates"] == {"default": None}
