@@ -12,12 +12,15 @@ use tauri::{
 use crate::daemon;
 
 const LABEL: &str = "meeting-prompt";
-const WIDTH: f64 = 360.0;
-const HEIGHT: f64 = 148.0;
-const MARGIN: f64 = 16.0;
+/// The window is transparent; prompt.html insets its card by GUTTER so its
+/// CSS shadow fits, which leaves the visible card 360x132.
+const GUTTER: f64 = 14.0;
+const WIDTH: f64 = 360.0 + 2.0 * GUTTER;
+const HEIGHT: f64 = 132.0 + 2.0 * GUTTER;
+const MARGIN: f64 = 16.0 - GUTTER;
 
 /// Menu-bar height-ish offset so the widget sits just under the system bar.
-const TOP_OFFSET: f64 = 40.0;
+const TOP_OFFSET: f64 = 40.0 - GUTTER;
 
 fn ensure_window(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(win) = app.get_webview_window(LABEL) {
@@ -37,7 +40,9 @@ fn ensure_window(app: &AppHandle) -> Option<WebviewWindow> {
         .accept_first_mouse(true)
         .focused(false)
         .visible(false)
-        .shadow(true)
+        .transparent(true)
+        // prompt.html draws the card's shadow itself, inside the gutter.
+        .shadow(false)
         .build()
         .ok()?;
     #[cfg(target_os = "macos")]
