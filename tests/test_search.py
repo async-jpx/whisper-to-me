@@ -129,6 +129,17 @@ def test_title_and_summary_hits(tmp_path):
     assert [(h["kind"], h["t"]) for h in result["hits"]] == [("summary", None)]
 
 
+def test_summary_snippet_drops_list_and_task_markers(tmp_path):
+    (tmp_path / "t.md").write_text(
+        "# Tasks\n\n## Action Items\n\n- [ ] Update the changelog\n- [x] Ship it\n",
+        encoding="utf-8",
+    )
+    [result] = search.search(tmp_path, "changelog")
+    [hit] = result["hits"]
+    assert "[ ]" not in hit["snippet"] and "[x]" not in hit["snippet"]
+    assert "- " not in hit["snippet"]
+
+
 def test_prefix_on_every_long_term_and_last(tmp_path):
     _meeting(tmp_path)
     assert search.search(tmp_path, "expo fri")  # both still being typed

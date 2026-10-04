@@ -28,7 +28,7 @@ from pathlib import Path
 from . import notes
 
 INDEX_FILENAME = ".wtm-index.sqlite3"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Private-use characters bracket each hit inside a snippet; the UI escapes
 # the snippet as plain text first, then swaps these for real <mark> tags —
@@ -96,6 +96,7 @@ def _plain(md: str) -> str:
     """Markdown → indexable text: heading/emphasis markers dropped so snippets
     read as prose instead of `## **TL;DR**` soup."""
     text = re.sub(r"^#{1,6}\s+", "", md, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+(?:\[[ xX]\]\s+)?", "", text, flags=re.MULTILINE)
     return text.replace("*", "")
 
 
