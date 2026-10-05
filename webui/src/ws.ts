@@ -29,6 +29,17 @@ function handleEvent(evt: DaemonEvent): void {
         text: evt.text || "",
       });
       break;
+    case "partial":
+      s.setPartial(evt.source, {
+        id: evt.id,
+        stamp: evt.stamp,
+        speaker: evt.speaker,
+        text: evt.text,
+      });
+      break;
+    case "partial_clear":
+      s.clearPartial(evt.source, evt.id);
+      break;
     case "echoes_dropped":
       s.appendNotice(`${evt.count} echoed line${evt.count === 1 ? "" : "s"} dropped`);
       break;

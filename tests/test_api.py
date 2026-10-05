@@ -700,6 +700,38 @@ def test_boot_is_idle_without_loading_whisper(detecting):
     assert tc.loads == []
 
 
+def test_opening_the_ui_warms_whisper_before_recording(detecting):
+    tc = detecting()
+    assert tc.loads == []
+
+    assert tc.get("/").status_code == 200
+    _wait_until(lambda: len(tc.loads) == 2)
+    assert set(tc.loads) == {"large-v3-turbo", "tiny"}
+
+
+def test_reconnect_replays_only_current_draft(client):
+    manager = client.manager
+    manager._sink({
+        "type": "partial", "source": "You", "speaker": "You", "label": False,
+        "id": "first", "stamp": "0:00:02", "text": "old draft",
+    })
+    manager._sink({
+        "type": "partial", "source": "You", "speaker": "You", "label": False,
+        "id": "second", "stamp": "0:00:04", "text": "current draft",
+    })
+    manager._sink({"type": "partial_clear", "source": "You", "id": "first"})
+    connection = manager.add_client()
+    frames = _drain(connection)
+    assert [e["text"] for e in frames if e["type"] == "partial"] == ["current draft"]
+    assert frames[-1]["speaker"] is None
+    manager.remove_client(connection)
+
+    manager._sink({"type": "partial_clear", "source": "You", "id": "second"})
+    connection = manager.add_client()
+    assert not any(e["type"] == "partial" for e in _drain(connection))
+    manager.remove_client(connection)
+
+
 def test_watch_endpoints_are_gone(client):
     for path in ("/api/watch/start", "/api/watch/stop", "/api/watch/respond"):
         assert client.post(path, json={"accept": True}).status_code == 404

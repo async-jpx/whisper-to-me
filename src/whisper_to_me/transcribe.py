@@ -45,6 +45,17 @@ class Transcriber:
             self.language = info.language
         return timed
 
+    def transcribe_preview(self, audio: np.ndarray) -> str:
+        """Fast, replaceable draft for the UI; final chunks use the full pass."""
+        segments, _ = self.model.transcribe(
+            audio,
+            language=self.language,
+            vad_filter=False,
+            beam_size=1,
+            condition_on_previous_text=False,
+        )
+        return " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+
     def transcribe_file(self, path: str) -> list[tuple[float, str]]:
         """Transcribe an audio file; returns (start_seconds, text) lines."""
         segments, _ = self.model.transcribe(

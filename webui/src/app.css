@@ -1074,6 +1074,16 @@ select:focus-visible {
   min-width: 0;
 }
 
+.t-line-partial .t-text {
+  color: var(--text-secondary);
+}
+
+.t-draft {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
 .t-notice {
   padding: 6px 0;
   font-size: 12px;

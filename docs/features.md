@@ -27,8 +27,14 @@ uv run wtm record --title "Team sync"
   permission once per terminal app (restart the app after granting). If the
   helper is unavailable, loopback devices (BlackHole, Zoom/Teams virtual
   devices) are used as a fallback; with neither, only the mic is heard.
-- **Live journal.** Every line is written to the note file the moment it is
-  transcribed — a crash or kill never loses the transcript.
+- **Live journal.** Every finalized line is written to the note file as soon
+  as it is transcribed. An unfinished utterance has not reached the journal;
+  in continuous speech, that window can include 30 seconds of audio plus its
+  final transcription time.
+- **Live drafts.** While someone keeps speaking, the UI updates a replaceable
+  draft roughly every 2 seconds from a fast local model. A pause (or 30 seconds
+  of uninterrupted speech) triggers the main model; only its finalized text
+  enters the note. Draft wording can change as the sentence becomes clear.
 - Useful flags: `--device N` (mic), `--system-device N|off`, `--model`
   (Whisper size), `--language`, `--ollama-model`, `--context "attendees,
   agenda hints"`, `--template NAME`, `--diarize`, `--no-summary`.

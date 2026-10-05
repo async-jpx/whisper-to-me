@@ -132,6 +132,7 @@ def record_session(
     events: EventSink | None = None,
     stop_event: threading.Event | None = None,
     keep_audio: bool = False,
+    preview_factory: Callable[[], object] | None = None,
 ) -> tuple[list[tuple[str, str]], datetime]:
     """Record (mic + system audio) until Ctrl-C, should_stop(recorders), or
     stop_event.is_set() — whichever comes first. With keep_audio, the mixed
@@ -144,6 +145,9 @@ def record_session(
     if sources is None:
         sources = [("You", audio.Recorder(device=device))]
         sources += _system_audio_sources(system_device)
+    if preview_factory is not None:
+        for _, rec in sources:
+            rec.preview_enabled = True
 
     if use_aec and len(sources) == 2:
         # Cancel speaker bleed from the mic signal itself, using the system
@@ -236,10 +240,50 @@ def record_session(
                         "text": text,
                         "label": label,
                     })
+                if preview_factory is not None:
+                    sink({
+                        "type": "partial_clear", "source": speaker,
+                        "id": captured_at.isoformat(),
+                    })
 
         return threading.Thread(target=worker)
 
+    def make_preview_worker(speaker: str, recorder: audio.Recorder) -> threading.Thread:
+        def worker() -> None:
+            previewer = None
+            while True:
+                item = recorder.previews.get()
+                if item is None:
+                    return
+                captured_at, chunk = item
+                if recorder.active_chunk_started != captured_at:
+                    continue
+                if previewer is None:
+                    try:
+                        previewer = preview_factory()
+                    except Exception as exc:
+                        sink({"type": "error", "message": f"Live preview unavailable: {exc}"})
+                        return
+                try:
+                    text = previewer.transcribe_preview(chunk)
+                except Exception as exc:
+                    sink({"type": "error", "message": f"Live preview unavailable: {exc}"})
+                    return
+                if text and recorder.active_chunk_started == captured_at:
+                    sink({
+                        "type": "partial", "source": speaker, "speaker": speaker,
+                        "id": captured_at.isoformat(),
+                        "stamp": str(captured_at - started).split(".")[0],
+                        "text": text, "label": label,
+                    })
+
+        return threading.Thread(target=worker, daemon=True)
+
     workers = [make_worker(speaker, rec) for speaker, rec in sources]
+    preview_workers = (
+        [make_preview_worker(speaker, rec) for speaker, rec in sources]
+        if preview_factory is not None else []
+    )
     started_recs: list[audio.Recorder] = []
     try:
         for _, rec in sources:
@@ -258,6 +302,8 @@ def record_session(
             capture.discard()
         raise
     for w in workers:
+        w.start()
+    for w in preview_workers:
         w.start()
 
     recorders = [rec for _, rec in sources]
@@ -293,6 +339,8 @@ def record_session(
             stop_error = exc      # not leak the other source's device/helper
     for w in workers:
         w.join()
+    for w in preview_workers:
+        w.join(timeout=5)
     if stop_error is not None:
         sink({
             "type": "error",

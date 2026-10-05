@@ -8,6 +8,7 @@ import { Icon } from "./Icons";
 
 export function LivePane() {
   const transcript = useStore((s) => s.transcript);
+  const partials = useStore((s) => s.partials);
   const brief = useStore((s) => s.brief);
   const scratchpad = useStore((s) => s.scratchpad);
   const setScratchpad = useStore((s) => s.setScratchpad);
@@ -38,7 +39,7 @@ export function LivePane() {
     if (autoScrollRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [transcript]);
+  }, [transcript, partials]);
 
   // Reset dismissed brief when store.brief changes
   useEffect(() => {
@@ -141,7 +142,19 @@ export function LivePane() {
             </div>
           ),
         )}
-        {transcript.length === 0 && (
+        {Object.values(partials).map((partial) => (
+          <div className="t-line t-line-partial" key={partial.id} aria-label="Live draft transcript">
+            <span className="t-stamp">{partial.stamp}</span>
+            {partial.speaker && (
+              <span className={"chip " + (partial.speaker === "You" ? "chip-you" : "chip-others")}>
+                {partial.speaker}
+              </span>
+            )}
+            <span className="t-text">{partial.text}</span>
+            <span className="t-draft">draft</span>
+          </div>
+        ))}
+        {transcript.length === 0 && Object.keys(partials).length === 0 && (
           <p className="t-empty">Listening. Lines appear here as people speak.</p>
         )}
       </div>

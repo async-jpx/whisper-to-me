@@ -13,6 +13,21 @@ export interface LineEvent {
   text?: string;
 }
 
+export interface PartialEvent {
+  type: "partial";
+  source: string;
+  id: string;
+  stamp: string;
+  speaker: string | null;
+  text: string;
+}
+
+export interface PartialClearEvent {
+  type: "partial_clear";
+  source: string;
+  id: string;
+}
+
 export interface EchoesDroppedEvent {
   type: "echoes_dropped";
   count: number;
@@ -44,6 +59,8 @@ export interface ErrorEvent {
 export type DaemonEvent =
   | StatusEvent
   | LineEvent
+  | PartialEvent
+  | PartialClearEvent
   | EchoesDroppedEvent
   | BriefEvent
   | SummarizingEvent

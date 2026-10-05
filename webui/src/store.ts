@@ -43,6 +43,13 @@ export interface TranscriptNotice {
 
 export type TranscriptEntry = TranscriptLine | TranscriptNotice;
 
+export interface PartialLine {
+  id: string;
+  stamp: string;
+  speaker: string | null;
+  text: string;
+}
+
 export interface Brief {
   title: string;
   tldr: string;
@@ -71,6 +78,7 @@ export interface AppState {
   recordPending: boolean;
   // -- live session ------------------------------------------------------
   transcript: TranscriptEntry[];
+  partials: Record<string, PartialLine>;
   brief: Brief | null;
   scratchpad: string;
   // -- navigation ---------------------------------------------------------
@@ -114,6 +122,8 @@ export interface AppState {
 
   clearTranscript(): void;
   appendLine(line: Omit<TranscriptLine, "kind">): void;
+  setPartial(source: string, line: PartialLine): void;
+  clearPartial(source: string, id: string): void;
   appendNotice(text: string): void;
   showBrief(brief: Brief): void;
   setScratchpad(content: string): void;
@@ -146,6 +156,7 @@ export const useStore = create<AppState>()((set, get) => ({
   status: IDLE_STATUS,
   recordPending: false,
   transcript: [],
+  partials: {},
   brief: null,
   scratchpad: "",
   view: "home",
@@ -194,6 +205,8 @@ export const useStore = create<AppState>()((set, get) => ({
       status,
       recordPending: false, // the daemon answered; buttons follow real state
       scratchpad: fresh ? "" : s.scratchpad,
+      transcript: fresh ? [] : s.transcript,
+      partials: fresh || !isActive(status) ? {} : s.partials,
     }));
     const { view, currentNote } = get();
     if (view === "home" && isActive(status) && currentNote === null) {
@@ -208,10 +221,21 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   clearTranscript() {
-    set({ transcript: [], brief: null });
+    set({ transcript: [], partials: {}, brief: null });
   },
   appendLine(line) {
     set((s) => ({ transcript: [...s.transcript, { kind: "line", ...line }] }));
+  },
+  setPartial(source, line) {
+    set((s) => ({ partials: { ...s.partials, [source]: line } }));
+  },
+  clearPartial(source, id) {
+    set((s) => {
+      if (s.partials[source]?.id !== id) return s;
+      const partials = { ...s.partials };
+      delete partials[source];
+      return { partials };
+    });
   },
   appendNotice(text) {
     set((s) => ({ transcript: [...s.transcript, { kind: "notice", text }] }));

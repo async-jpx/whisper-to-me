@@ -159,9 +159,14 @@ class SessionManager:
         self._session_thread: threading.Thread | None = None
         self._transcriber = None
         self._transcriber_lock = threading.Lock()
+        self._transcriber_warmup_started = False
+        self._previewer = None
+        self._previewer_lock = threading.Lock()
+        self._previewer_warmup_started = False
         self._clients: list[_Client] = []
         self._clients_lock = threading.Lock()
         self._lines: list[dict] = []  # replay buffer for late-joining clients
+        self._partials: dict[str, dict] = {}
         self._scratchpad: str = ""  # note-taker's live notes (Phase 4.2)
 
     def _get_transcriber(self):
@@ -169,6 +174,58 @@ class SessionManager:
             if self._transcriber is None:
                 self._transcriber = load_transcriber(self.opts.model, self.opts.language)
             return self._transcriber
+
+    def _get_previewer(self):
+        with self._previewer_lock:
+            if self._previewer is None:
+                if self.opts.model == "tiny":
+                    self._previewer = self._get_transcriber()
+                    return self._previewer
+                try:
+                    self._previewer = load_transcriber("tiny", self.opts.language)
+                except Exception as exc:
+                    console.print(f"[yellow]Tiny preview model unavailable: {exc}[/yellow]")
+                    self._previewer = self._get_transcriber()
+            return self._previewer
+
+    def warm_transcriber(self) -> None:
+        """Load Whisper while the UI is opening, before Record is pressed.
+
+        Model construction can take several seconds on a cold process.  It is
+        deliberately asynchronous: serving the UI and meeting detection stay
+        responsive, while the first recording normally finds a ready model.
+        """
+        with self._lock:
+            warm_preview = self._previewer is None and not self._previewer_warmup_started
+            if warm_preview:
+                self._previewer_warmup_started = True
+        if warm_preview:
+            threading.Thread(target=self._warm_previewer, daemon=True).start()
+        with self._transcriber_lock:
+            if self._transcriber is not None or self._transcriber_warmup_started:
+                return
+            self._transcriber_warmup_started = True
+
+        def warm() -> None:
+            try:
+                self._get_transcriber()
+            except Exception as exc:
+                # Recording retains its normal error path and can retry later.
+                console.print(f"[yellow]Whisper warm-up failed: {exc}[/yellow]")
+            finally:
+                with self._transcriber_lock:
+                    self._transcriber_warmup_started = False
+
+        threading.Thread(target=warm, daemon=True).start()
+
+    def _warm_previewer(self) -> None:
+        try:
+            self._get_previewer()
+        except Exception as exc:
+            console.print(f"[yellow]Live preview warm-up failed: {exc}[/yellow]")
+        finally:
+            with self._lock:
+                self._previewer_warmup_started = False
 
     def live_note_name(self) -> str | None:
         """Filename of the live journal while a session is writing it — the
@@ -224,7 +281,10 @@ class SessionManager:
             if isinstance(result, State) and result != self._state:
                 if isinstance(result, Active) and not isinstance(self._state, Active):
                     self._lines = []
+                    self._partials = {}
                     self._scratchpad = ""
+                elif isinstance(self._state, Active) and not isinstance(result, Active):
+                    self._partials = {}
                 self._state = result
                 frame = self._status_locked()
                 with self._clients_lock:
@@ -244,10 +304,25 @@ class SessionManager:
             self._transition(lambda s: runner.recording_started(s, started))
             return
         wire = {k: v for k, v in event.items() if k not in _WIRE_EXCLUDE}
-        if wire.get("type") == "line":
+        if wire.get("type") in {"line", "partial"}:
             if not event.get("label"):
                 wire["speaker"] = None  # single source: no speaker labels
-            self._lines.append(wire)
+        if wire.get("type") in {"partial", "partial_clear"}:
+            with self._clients_lock:
+                source = wire["source"]
+                if wire["type"] == "partial":
+                    self._partials[source] = wire
+                elif self._partials.get(source, {}).get("id") == wire["id"]:
+                    self._partials.pop(source, None)
+                for client in self._clients:
+                    client.send(wire)
+            return
+        if wire.get("type") == "line":
+            with self._clients_lock:
+                self._lines.append(wire)
+                for client in self._clients:
+                    client.send(wire)
+            return
         self._broadcast(wire)
 
     def add_client(self) -> _Client:
@@ -255,9 +330,11 @@ class SessionManager:
         with self._lock:
             with self._clients_lock:
                 self._clients.append(client)
-            client.send(self._status_locked())
-        for line in self._lines:
-            client.send(line)
+                client.send(self._status_locked())
+                for line in self._lines:
+                    client.send(line)
+                for partial in self._partials.values():
+                    client.send(partial)
         return client
 
     def remove_client(self, client: _Client) -> None:
@@ -336,7 +413,7 @@ class SessionManager:
             )
         )
         if isinstance(opened, Prompting) and opened.prompt.id == prompt_id:
-            threading.Thread(target=self._get_transcriber, daemon=True).start()
+            self.warm_transcriber()
 
     def start_record(self, title: str | None, template: str | None = None) -> None:
         now = datetime.now()
@@ -428,6 +505,7 @@ class SessionManager:
                 events=self._sink,
                 stop_event=active.stop,
                 keep_audio=keep_audio,
+                preview_factory=self._get_previewer,
             )
         self._transition(runner.summarizing)
         summarize_and_save(
@@ -622,6 +700,7 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
         # no-cache: the asset filenames are content-hashed, but this document
         # is not — a heuristically-cached stale index points at deleted
         # bundles and breaks the page until revalidation.
+        manager.warm_transcriber()
         index_html = STATIC_DIR / "dist" / "index.html"
         if index_html.is_file():
             return FileResponse(index_html, headers={"Cache-Control": "no-cache"})

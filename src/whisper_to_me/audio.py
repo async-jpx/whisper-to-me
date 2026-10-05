@@ -25,7 +25,10 @@ BLOCK_FRAMES = int(SAMPLE_RATE * BLOCK_SECONDS)
 # Chunking thresholds (in blocks of BLOCK_SECONDS)
 TRAILING_SILENCE_BLOCKS = 8   # 0.8 s of quiet ends an utterance
 MIN_SPEECH_BLOCKS = 2         # ignore blips shorter than 0.2 s
-MAX_CHUNK_BLOCKS = 300        # force a flush at 30 s
+# Natural pauses provide full quality chunks. A 30-second safety flush limits
+# the size of uninterrupted speech; replaceable previews handle UI latency.
+MAX_CHUNK_BLOCKS = 300        # final transcript safety flush at 30 s
+PREVIEW_INTERVAL_BLOCKS = 20  # replaceable UI draft every 2 s of speech
 PRE_ROLL_BLOCKS = 5           # 0.5 s kept from before speech onset
 # Deliberately permissive: quiet speech (e.g. remote voices played through
 # speakers) must get through; Whisper's own VAD rejects non-speech later.
@@ -73,6 +76,9 @@ class Recorder:
     def __init__(self, device: int | None = None):
         self.device = device
         self.chunks: queue.Queue[tuple[datetime, np.ndarray] | None] = queue.Queue()
+        self.previews: queue.Queue[tuple[datetime, np.ndarray] | None] = queue.Queue(maxsize=1)
+        self.preview_enabled = False
+        self.active_chunk_started: datetime | None = None
         self._blocks: queue.Queue[np.ndarray | None] = queue.Queue()
         self._stream: sd.InputStream | None = None
         self._chunker: threading.Thread | None = None
@@ -126,6 +132,20 @@ class Recorder:
             if self._chunker is not None:
                 self._chunker.join(timeout=5)
             self.chunks.put(None)
+            if self.preview_enabled:
+                self._put_preview(None)
+
+    def _put_preview(self, item: tuple[datetime, np.ndarray] | None) -> None:
+        # A draft is only useful while it is current.  Replace an older
+        # snapshot instead of letting slow inference build a latency backlog.
+        try:
+            self.previews.put_nowait(item)
+        except queue.Full:
+            try:
+                self.previews.get_nowait()
+            except queue.Empty:
+                pass
+            self.previews.put_nowait(item)
 
     def _chunk_loop(self) -> None:
         buffer: list[np.ndarray] = []
@@ -137,6 +157,7 @@ class Recorder:
 
         def flush() -> None:
             nonlocal buffer, chunk_started, speech_blocks, silence_run
+            self.active_chunk_started = None
             if speech_blocks >= MIN_SPEECH_BLOCKS:
                 self.chunks.put((chunk_started, np.concatenate(buffer)))
             buffer, chunk_started, speech_blocks, silence_run = [], None, 0, 0
@@ -179,6 +200,7 @@ class Recorder:
                     )
                 else:
                     chunk_started = datetime.now()
+                self.active_chunk_started = chunk_started
                 buffer.extend(pre_roll)
                 pre_roll.clear()
             buffer.append(block)
@@ -190,6 +212,13 @@ class Recorder:
 
             if silence_run >= TRAILING_SILENCE_BLOCKS or len(buffer) >= MAX_CHUNK_BLOCKS:
                 flush()
+            elif (
+                self.preview_enabled
+                and speech_blocks >= MIN_SPEECH_BLOCKS
+                and len(buffer) >= PREVIEW_INTERVAL_BLOCKS
+                and len(buffer) % PREVIEW_INTERVAL_BLOCKS == 0
+            ):
+                self._put_preview((chunk_started, np.concatenate(buffer)))
 
 
 _TAP_SOURCE = Path(__file__).with_name("system_audio_tap.swift")
@@ -311,6 +340,8 @@ class SystemAudioTap(Recorder):
                 self._chunker.join(timeout=5)
         finally:
             self.chunks.put(None)
+            if self.preview_enabled:
+                self._put_preview(None)
 
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -366,3 +397,5 @@ class FileRecorder(Recorder):
         if self._chunker is not None:
             self._chunker.join(timeout=10)
         self.chunks.put(None)
+        if self.preview_enabled:
+            self._put_preview(None)

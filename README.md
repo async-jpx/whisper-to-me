@@ -54,7 +54,8 @@ meeting then tries the current Calendar.app event or the Zoom window topic
 (local, permission gated); otherwise a title is inferred from the conversation
 by the local summarizer, and the note file is renamed to match.
 
-First run downloads the Whisper model once; everything afterwards is offline.
+First run downloads the Whisper models once (the main model and the tiny live
+draft model); everything afterwards is offline.
 macOS will ask for microphone permission for your terminal on first recording.
 
 ## Capturing remote meetings (both sides of the call)
