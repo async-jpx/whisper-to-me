@@ -3,6 +3,8 @@
 
 import type {
   AudioPeaks,
+  CommunicationAnalysis,
+  MeetingCommunicationAnalysis,
   ExportConfig,
   NewTemplate,
   NoteLine,
@@ -120,6 +122,10 @@ export const api = {
   deleteArchived: (name: string) => sendJson<void>("DELETE", archived(name)),
   transcript: async (name: string) =>
     (await getJson<{ lines: NoteLine[] }>(`${note(name)}/transcript`)).lines,
+  analyzeLine: (name: string, lineIndex: number) =>
+    sendJson<CommunicationAnalysis>("POST", `${note(name)}/analyze`, { line_index: lineIndex }),
+  analyzeMeeting: (name: string) =>
+    sendJson<MeetingCommunicationAnalysis>("POST", `${note(name)}/analyze/meeting`),
   /* For <audio src>: the daemon answers Range requests with 206, and every
      fetch counts as "played" for the 30-day retention. */
   audioUrl: (name: string) => `${note(name)}/audio`,

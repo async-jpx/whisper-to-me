@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import audio_store
-from . import briefs, chat, export, followup, notes, notion_export, runner, search, templates
+from . import briefs, chat, communication, export, followup, notes, notion_export, runner, search, templates
 from . import summarize as summ
 from . import watch
 from .config import Config, load_config, save_config
@@ -539,6 +539,10 @@ class TaskToggleBody(BaseModel):
     checked: bool
 
 
+class AnalyzeBody(BaseModel):
+    line_index: int
+
+
 class PromptAnswerBody(BaseModel):
     answer: runner.Answer
 
@@ -896,6 +900,30 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
             raise HTTPException(status_code=404, detail="note not found")
         lines = notes.parse_transcript(path.read_text(encoding="utf-8"))
         return {"lines": [asdict(line) for line in lines]}
+
+    @app.post("/api/notes/{name}/analyze")
+    def analyze_transcript_line(name: str, body: AnalyzeBody):
+        path = _safe_note_path(opts.notes_dir, name)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="note not found")
+        try:
+            return communication.analyze(path, body.line_index, opts.ollama_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except summ.OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/notes/{name}/analyze/meeting")
+    def analyze_meeting_communication(name: str):
+        path = _safe_note_path(opts.notes_dir, name)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="note not found")
+        try:
+            return communication.analyze_meeting(path, opts.ollama_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except summ.OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     def _note_audio(name: str) -> Path:
         """The note's path, 404 unless it has a kept recording."""
