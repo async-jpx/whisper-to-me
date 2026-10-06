@@ -75,46 +75,6 @@ export interface NoteLine {
   text: string;
 }
 
-export interface CommunicationAnalysis {
-  line_index: number;
-  what_worked: string;
-  improvement: string;
-  try_saying: string;
-  delivery: string;
-  audio_metrics: {
-    excerpt_seconds: number;
-    approx_words_per_minute: number;
-    pauses_over_0_4s: number;
-    longest_pause_seconds: number;
-    volume_variation: string;
-  } | null;
-}
-
-export interface MeetingCommunicationAnalysis {
-  overall_read: string;
-  strengths: string[];
-  patterns: Array<{
-    pattern: string;
-    evidence: number[];
-    impact: string;
-    change: string;
-  }>;
-  rewrites: Array<{
-    line_index: number;
-    original: string;
-    revision: string;
-    reason: string;
-  }>;
-  next_time: { practice: string; steps: string[]; structure: string };
-  audio_metrics: {
-    duration_seconds: number;
-    approx_speaking_rate_wpm: number | null;
-    longer_low_energy_gaps: number;
-    energy_variation: string;
-    interpretation_limit: string;
-  } | null;
-}
-
 /* GET /api/notes/{name}/audio/peaks: ~2 values per second, normalized 0..1. */
 export interface AudioPeaks {
   duration_s: number;

@@ -69,8 +69,9 @@ function GeneralSection({ settings, apply }: { settings: Settings; apply: (s: Se
           <h3>Keep meeting recordings</h3>
           <p>
             Save one compressed recording of each meeting next to its note, so you can play it back
-            from the transcript. Recordings stay on this Mac. A recording you have not played for 30
-            days is deleted automatically; the note and transcript are always kept.
+            from the transcript, plus your microphone on its own so Coaching can measure your voice.
+            Recordings stay on this Mac. A recording you have not played for 30 days is deleted
+            automatically; the note, transcript and voice stats are always kept.
           </p>
         </div>
         <Toggle

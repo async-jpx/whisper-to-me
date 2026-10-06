@@ -6,6 +6,13 @@ on the shared capture timeline, so second `t` of the file is transcript stamp
 
     <note dir>/.wtm-audio/<note stem>.m4a
     <note dir>/.wtm-audio/<note stem>.peaks.json   # waveform for the player
+    <note dir>/.wtm-audio/<note stem>.mic.m4a      # the mic alone (see below)
+
+When a session has more than one source, the echo-cancelled mic is also kept
+on its own, on the same timeline. It is the only audio that holds just the
+user's voice, which voice coaching needs. A single-source recording IS the
+mic, so it gets no separate copy. The mic track always travels with the main
+recording.
 
 The hidden directory sits outside every `*.md` glob, so a recording is never a
 note, never indexed, never exported. It always lives beside its note's
@@ -65,6 +72,10 @@ def peaks_path(note: Path) -> Path:
     return audio_dir(note) / f"{note.stem}.peaks.json"
 
 
+def mic_path(note: Path) -> Path:
+    return audio_dir(note) / f"{note.stem}.mic.m4a"
+
+
 def has_audio(note: Path) -> bool:
     return audio_path(note).is_file()
 
@@ -79,6 +90,7 @@ def move_audio(src_note: Path, dest_note: Path) -> None:
     # Peaks first, like finish(): a visible m4a always has its waveform.
     for src, dest in (
         (peaks_path(src_note), peaks_path(dest_note)),
+        (mic_path(src_note), mic_path(dest_note)),
         (audio_path(src_note), audio_path(dest_note)),
     ):
         if src.is_file():
@@ -88,6 +100,7 @@ def move_audio(src_note: Path, dest_note: Path) -> None:
 
 def delete_audio(note: Path) -> None:
     audio_path(note).unlink(missing_ok=True)
+    mic_path(note).unlink(missing_ok=True)
     peaks_path(note).unlink(missing_ok=True)
 
 
@@ -98,6 +111,8 @@ def purge_unplayed(note_dirs: list[Path], now: float | None = None) -> int:
     removed = 0
     for note_dir in note_dirs:
         for m4a in (note_dir / AUDIO_DIRNAME).glob("*.m4a"):
+            if m4a.name.endswith(".mic.m4a"):
+                continue  # the main track's play clock decides for both
             try:
                 if m4a.stat().st_mtime >= cutoff:
                     continue
@@ -130,8 +145,9 @@ def clean_temp(notes_dir: Path) -> None:
 class _Track:
     """One source's samples on disk, placed by capture time."""
 
-    def __init__(self, path: Path, started: datetime) -> None:
+    def __init__(self, path: Path, started: datetime, is_mic: bool) -> None:
         self.path = path
+        self.is_mic = is_mic
         self._started = started
         self._fh = path.open("wb")
         self._cursor: int | None = None
@@ -180,9 +196,9 @@ class AudioCapture:
         self._tmp.mkdir(parents=True, exist_ok=True)
         self._tracks: list[_Track] = []
 
-    def track(self) -> BlockTap:
+    def track(self, is_mic: bool = False) -> BlockTap:
         """A writer for one more source: call it with (capture time, block)."""
-        track = _Track(self._tmp / f"{len(self._tracks)}.pcm", self._started)
+        track = _Track(self._tmp / f"{len(self._tracks)}.pcm", self._started, is_mic)
         self._tracks.append(track)
         return track.write
 
@@ -199,13 +215,13 @@ class AudioCapture:
                 return None
             wav = self._tmp / "mix.wav"
             peaks = _mix(self._tracks, total, wav)
-            encoded = self._tmp / "mix.m4a"
-            subprocess.run(
-                ["afconvert", "-f", "m4af", "-d", "aac", "-b", _AAC_BITRATE,
-                 str(wav), str(encoded)],
-                check=True,
-                capture_output=True,
-            )
+            encoded = _encode(wav)
+            mic = next((t for t in self._tracks if t.is_mic), None)
+            mic_encoded = None
+            if mic is not None and len(self._tracks) > 1 and mic.samples:
+                mic_wav = self._tmp / "mic.wav"
+                _mix([mic], mic.samples, mic_wav)
+                mic_encoded = _encode(mic_wav)
             sidecar = self._tmp / "peaks.json"
             sidecar.write_text(
                 json.dumps({"duration_s": round(total / SAMPLE_RATE, 3), "peaks": peaks}),
@@ -214,6 +230,8 @@ class AudioCapture:
             # Peaks land first: has_audio() keys off the m4a, so a visible
             # recording always has its waveform.
             sidecar.replace(peaks_path(self._note))
+            if mic_encoded is not None:
+                mic_encoded.replace(mic_path(self._note))
             dest = audio_path(self._note)
             encoded.replace(dest)
             return dest
@@ -224,6 +242,17 @@ class AudioCapture:
         for track in self._tracks:
             track.close()
         shutil.rmtree(self._tmp, ignore_errors=True)
+
+
+def _encode(wav: Path) -> Path:
+    encoded = wav.with_suffix(".m4a")
+    subprocess.run(
+        ["afconvert", "-f", "m4af", "-d", "aac", "-b", _AAC_BITRATE,
+         str(wav), str(encoded)],
+        check=True,
+        capture_output=True,
+    )
+    return encoded
 
 
 def _mix(tracks: list[_Track], total: int, wav_path: Path) -> list[float]:

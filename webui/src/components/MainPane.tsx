@@ -2,6 +2,7 @@
    file; add a view by extending store.View and the switch below. */
 
 import { lazy, Suspense } from "react";
+import { CoachingDashboard } from "../coaching/CoachingDashboard";
 import { useStore, type View } from "../store";
 import { HomeView } from "./HomeView";
 import { LivePane } from "./LivePane";
@@ -30,6 +31,8 @@ function ViewBody({ view }: { view: View }) {
       );
     case "templates":
       return <TemplatesPage />;
+    case "coaching":
+      return <CoachingDashboard />;
     case "settings":
       return <SettingsPage />;
     default: {

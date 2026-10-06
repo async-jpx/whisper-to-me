@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import time
 import wave
 from datetime import datetime, timedelta
@@ -100,6 +101,37 @@ def test_finish_writes_m4a_and_peaks_and_removes_temp(tmp_path):
     }
 
 
+@pytest.mark.skipif(shutil.which("afconvert") is None, reason="macOS afconvert")
+def test_two_sources_also_keep_the_mic_alone(tmp_path):
+    note = tmp_path / "meeting.md"
+    capture = audio_store.AudioCapture(note, STARTED)
+    mic, system = capture.track(is_mic=True), capture.track()
+    _feed(mic, 0.0, 20, 0.2)       # you: 0 – 2 s
+    _feed(system, 1.0, 10, 0.4)    # others talk over you: 1 – 2 s
+    capture.finish()
+
+    decoded = tmp_path / "mic.wav"
+    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16",
+                    str(audio_store.mic_path(note)), str(decoded)], check=True)
+    alone = _read_wav(decoded)
+    rms = lambda a, b: float(np.sqrt(np.mean(alone[int(a * SAMPLE_RATE):int(b * SAMPLE_RATE)] ** 2)))  # noqa: E731
+    assert rms(0.2, 0.8) == pytest.approx(0.2, abs=0.03)
+    assert rms(1.2, 1.8) == pytest.approx(0.2, abs=0.03)  # mixed would be 0.6
+    assert {p.name for p in audio_store.audio_dir(note).iterdir()} == {
+        "meeting.m4a", "meeting.mic.m4a", "meeting.peaks.json"
+    }
+
+
+@pytest.mark.skipif(shutil.which("afconvert") is None, reason="macOS afconvert")
+def test_single_source_keeps_no_mic_copy(tmp_path):
+    note = tmp_path / "meeting.md"
+    capture = audio_store.AudioCapture(note, STARTED)
+    _feed(capture.track(is_mic=True), 0.0, 10, 0.2)
+    capture.finish()
+    assert audio_store.has_audio(note)
+    assert not audio_store.mic_path(note).exists()
+
+
 def test_peaks_are_capped_for_long_recordings(tmp_path):
     capture = audio_store.AudioCapture(tmp_path / "m.md", STARTED)
     tap = capture.track()
@@ -148,6 +180,7 @@ def _with_audio(note):
     note.write_text("# n\n", encoding="utf-8")
     audio_store.audio_dir(note).mkdir(parents=True, exist_ok=True)
     audio_store.audio_path(note).write_bytes(b"m4a")
+    audio_store.mic_path(note).write_bytes(b"mic")
     audio_store.peaks_path(note).write_text("{}", encoding="utf-8")
     return note
 
@@ -162,6 +195,7 @@ def test_archive_and_restore_carry_the_audio_even_on_a_name_clash(tmp_path):
     assert archived.name == "standup-1.md"
     assert audio_store.audio_path(archived).read_bytes() == b"m4a"
     assert audio_store.peaks_path(archived).is_file()
+    assert audio_store.mic_path(archived).read_bytes() == b"mic"
     assert not audio_store.has_audio(note)
     assert not audio_store.has_audio(archive / "standup.md")
 
@@ -176,6 +210,7 @@ def test_delete_note_deletes_its_audio(tmp_path):
     assert not note.exists()
     assert not audio_store.audio_path(note).exists()
     assert not audio_store.peaks_path(note).exists()
+    assert not audio_store.mic_path(note).exists()
 
 
 def test_inferred_title_move_takes_the_audio_and_writes_the_app(tmp_path, monkeypatch):
@@ -198,6 +233,7 @@ def test_inferred_title_move_takes_the_audio_and_writes_the_app(tmp_path, monkey
     assert not live.exists()
     assert audio_store.audio_path(path).read_bytes() == b"m4a"
     assert audio_store.peaks_path(path).is_file()
+    assert audio_store.mic_path(path).read_bytes() == b"mic"
     assert not audio_store.audio_path(live).exists()
     assert notes.frontmatter_fields(path.read_text())["app"] == "Zoom"
 
@@ -215,17 +251,23 @@ def test_purge_drops_unplayed_recordings_but_keeps_notes(tmp_path):
     stale_archived = _with_audio(archive / "old.md")
     now = time.time()
     old = now - 31 * 86400
+    for note in (stale, stale_archived, fresh):
+        os.utime(audio_store.mic_path(note), (old, old))
     for note in (stale, stale_archived):
         os.utime(audio_store.audio_path(note), (old, old))
     played_once = _with_audio(tmp_path / "played.md")
     os.utime(audio_store.audio_path(played_once), (old, old))
+    os.utime(audio_store.mic_path(played_once), (old, old))
     audio_store.mark_played(played_once)
 
     assert audio_store.purge_unplayed([tmp_path, archive], now=now) == 2
 
     assert not audio_store.has_audio(stale)
     assert not audio_store.peaks_path(stale).exists()
+    assert not audio_store.mic_path(stale).exists()
     assert not audio_store.has_audio(stale_archived)
+    assert audio_store.mic_path(fresh).exists()
+    assert audio_store.mic_path(played_once).exists()
     assert audio_store.has_audio(fresh)
     assert audio_store.has_audio(played_once)
     assert stale.exists() and stale_archived.exists()

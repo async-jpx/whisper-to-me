@@ -189,8 +189,8 @@ def record_session(
     live_path = notes.start_live_note(title, started, notes_dir)
     capture = audio_store.AudioCapture(live_path, started) if keep_audio else None
     if capture is not None:
-        for _, rec in sources:
-            rec.block_tap = capture.track()
+        for speaker, rec in sources:
+            rec.block_tap = capture.track(is_mic=speaker == "You")
 
     def make_worker(speaker: str, recorder: audio.Recorder) -> threading.Thread:
         def worker() -> None:

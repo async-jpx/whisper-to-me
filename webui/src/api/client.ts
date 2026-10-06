@@ -3,8 +3,6 @@
 
 import type {
   AudioPeaks,
-  CommunicationAnalysis,
-  MeetingCommunicationAnalysis,
   ExportConfig,
   NewTemplate,
   NoteLine,
@@ -42,11 +40,11 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return resp;
 }
 
-async function getJson<T>(path: string): Promise<T> {
+export async function getJson<T>(path: string): Promise<T> {
   return (await request(path)).json();
 }
 
-async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await request(path, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -83,7 +81,7 @@ function parseSettings(w: WireSettings): Settings {
   };
 }
 
-const note = (name: string) => `/api/notes/${encodeURIComponent(name)}`;
+export const note = (name: string) => `/api/notes/${encodeURIComponent(name)}`;
 const archived = (name: string) => `/api/archived/${encodeURIComponent(name)}`;
 const template = (name: string) => `/api/templates/${encodeURIComponent(name)}`;
 
@@ -122,10 +120,6 @@ export const api = {
   deleteArchived: (name: string) => sendJson<void>("DELETE", archived(name)),
   transcript: async (name: string) =>
     (await getJson<{ lines: NoteLine[] }>(`${note(name)}/transcript`)).lines,
-  analyzeLine: (name: string, lineIndex: number) =>
-    sendJson<CommunicationAnalysis>("POST", `${note(name)}/analyze`, { line_index: lineIndex }),
-  analyzeMeeting: (name: string) =>
-    sendJson<MeetingCommunicationAnalysis>("POST", `${note(name)}/analyze/meeting`),
   /* For <audio src>: the daemon answers Range requests with 206, and every
      fetch counts as "played" for the 30-day retention. */
   audioUrl: (name: string) => `${note(name)}/audio`,

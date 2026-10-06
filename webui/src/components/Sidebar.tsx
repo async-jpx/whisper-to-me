@@ -387,6 +387,7 @@ export function Sidebar() {
             view="templates"
             onClick={() => void navigate("templates")}
           />
+          <NavItem icon="coach" label="Coaching" view="coaching" onClick={() => void navigate("coaching")} />
         </nav>
         {!viewArchived && (
           <label className="search-field">
