@@ -11,7 +11,7 @@ import type { NoteMeta, SearchResult, Status, Template } from "./api/types";
 
 /* The page shown in the main pane. "note" pairs with currentNote; every
    other view has currentNote === null. */
-export type View = "home" | "live" | "note" | "chat" | "templates" | "settings";
+export type View = "home" | "live" | "note" | "chat" | "templates" | "coaching" | "settings";
 
 /* The open note's two tabs. The rendered summary and the transcript stay
    mounted across switches, so playback and scroll survive a tab change. */

@@ -101,6 +101,21 @@ briefs.py      "Last time…" briefs: FTS find the most recent related note by
                buffered in the replay), best-effort/never raises
 followup.py    follow-up email draft from a note's summary (transcript dropped)
                via one _chat call; returned to the caller, never sent anywhere
+coaching/      self-contained communication coaching. To remove it, delete
+               this folder, webui/src/coaching/, the server include_router
+               line and the "coaching" View and nav item. analysis.py runs
+               per-line and full-meeting Ollama reviews (only "You" lines are
+               judged), store.py saves the
+               latest meeting review to <notes dir>/.wtm-coaching/<name>.json,
+               voice.py measures pace, pauses, loudness and pitch spread on
+               your own track (mic.m4a, or the main track of a single-source
+               note, never the mixed track of a multi-source note) and caches
+               them as <name>.voice.json, so they outlive the audio purge.
+               stats.py computes transcript stats (talk share, turns,
+               questions, fillers; notes with under 20 of your words are
+               skipped), adds the voice stats, and compares the last 5
+               meetings with the 5 before for the dashboard. api.py is the
+               APIRouter
 diarize.py     speaker diarization within "Others" (beta, opt-in `--diarize` +
                `--extra diarize`): ECAPA embeddings (SpeechBrain, lazy) +
                numpy agglomerative cosine clustering; degrades to "Others" when
@@ -111,7 +126,9 @@ audio_store.py opt-in kept audio ([recording] keep_audio): each source's
                block_tap streams int16 into its own temp file placed by
                capture time (late/stalled tap = silent gap), mixed at stop
                → afconvert AAC `<note dir>/.wtm-audio/<stem>.m4a` +
-               .peaks.json; follows the note (inferred-title move, archive,
+               .peaks.json, plus `<stem>.mic.m4a`, the echo-cancelled mic
+               alone (multi-source sessions only; voice coaching reads it);
+               all follow the note (inferred-title move, archive,
                restore, delete); temp dirs carry the pid so only a dead
                process's are cleaned; unplayed 30 days (mtime) → purged
 config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
@@ -421,6 +438,17 @@ Key invariants:
   only state. It is never bootstrapped at runtime — it takes effect at the
   next login. If the user turns it off in System Settings → Login Items, the
   checkbox does not know.
+- **Voice stats must not use transcript windows** (coaching/voice.py). The
+  mic track already holds only your voice, so `measure()` reads it from your
+  first line to the end. Cutting at the next transcript line squeezed an
+  interrupted answer into 2 s (329 wpm), and cutting at your own lines lost
+  pauses that crossed a line boundary. The speech gate is set relative to
+  your level at the start of your lines, which is reliably you, not to the
+  track's 95th percentile. Residual echo after AEC converges sits 25 to 40 dB
+  under your voice, and a gate 30 dB under the 95th percentile counted it as
+  talk time. A gap of STOP_S or more means you stopped, not that you paused.
+  Re-verify with `wtm simulate` fixtures that include an interruption and a
+  trailing Others line, and compare against the known talk time.
 - **FDAF adaptation must use the true error** (echo_cancel.py): adapt on
   `block − y_hat`, never on the protected output — adapting on the substituted
   signal keeps adding a full step to already-wrong weights and the filter
