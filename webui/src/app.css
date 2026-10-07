@@ -2053,6 +2053,23 @@ button.tl-line:hover .tl-time {
   color: var(--text-secondary);
 }
 
+.ignored-apps {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.ignored-apps li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+
 .switch {
   position: relative;
   flex-shrink: 0;

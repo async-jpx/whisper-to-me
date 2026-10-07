@@ -51,7 +51,10 @@ Takeaways we adopted:
    `kAudioProcessPropertyIsRunningInput` (`'piri'`) per process, comparing
    `kAudioProcessPropertyPID` (`'ppid'`) against our own pid **and our
    spawned helpers** (the ScreenCaptureKit system-audio tap is a child
-   process; `Recorder.helper_pid` reports it). When no *other* process has
+   process; `Recorder.helper_pid` reports it). ScreenCaptureKit's `replayd`
+   daemon is skipped too: it runs audio input whenever system audio is being
+   captured, our own tap included, so counting it kept this signal from ever
+   firing. When no *other* process has
    run input for `MIC_RELEASE_GRACE` (10 s — device switches and reconnect
    blips re-grab quickly), the meeting is over.
    Two guards make this safe:
@@ -97,6 +100,12 @@ boot ──▶ idle ──detect──▶ prompting ──Record──▶ record
   meeting that is still live. It clears when `detect_meeting()` returns None,
   so the next meeting prompts normally. If the meeting ends while its prompt
   is up, the prompt closes and nothing is sat out.
+- **"Don't ask for this app".** When the prompt knows which app holds the
+  mic, it offers a checkbox; answering with it ticked (`ignore_app: true`)
+  adds the app to `[detection] ignored_apps` in config.toml. From then on a
+  mic that only ignored apps hold never prompts (Zoom's CptHost trigger is
+  skipped when "Zoom" is ignored). A process with no app bundle can't be
+  named, so it still prompts. Settings → General lists and removes them.
 - **Manual record and simulate supersede a prompt.** "Start recording" is
   allowed while prompting; the prompt goes away in the same transition.
 - **Stop works on every recording.** `POST /api/record/stop` stops manual and

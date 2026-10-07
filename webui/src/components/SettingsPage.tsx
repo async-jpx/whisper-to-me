@@ -1,6 +1,6 @@
-/* Settings: General (recording retention) and Connections (Obsidian,
-   Notion). Every save here is a write to the local config.toml through the
-   daemon. Connecting Notion stores the token; it is not checked over the
+/* Settings: General (recording retention, apps that never prompt) and
+   Connections (Obsidian, Notion). Every save here is a write to the local
+   config.toml through the daemon. Connecting Notion stores the token; it is not checked over the
    network until the first push. */
 
 import { useEffect, useState } from "react";
@@ -62,26 +62,65 @@ function GeneralSection({ settings, apply }: { settings: Settings; apply: (s: Se
     }
   };
 
+  const unignore = async (app: string) => {
+    setSaving(true);
+    try {
+      apply(await api.setIgnoredApps(settings.detection.ignored_apps.filter((a) => a !== app)));
+      toast(`Hush will offer to record when ${app} uses the mic.`);
+    } catch (err) {
+      toast(errorText(err, "Could not save the setting."), "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <section className="settings-card">
-      <div className="setting-row">
+    <>
+      <section className="settings-card">
+        <div className="setting-row">
+          <div className="setting-text">
+            <h3>Keep meeting recordings</h3>
+            <p>
+              Save one compressed recording of each meeting next to its note, so you can play it
+              back from the transcript, plus your microphone on its own so Coaching can measure your
+              voice. Recordings stay on this Mac. A recording you have not played for 30 days is
+              deleted automatically; the note, transcript and voice stats are always kept.
+            </p>
+          </div>
+          <Toggle
+            label="Keep meeting recordings"
+            checked={settings.recording.keep_audio}
+            disabled={saving}
+            onChange={(v) => void setKeepAudio(v)}
+          />
+        </div>
+      </section>
+      <section className="settings-card">
         <div className="setting-text">
-          <h3>Keep meeting recordings</h3>
+          <h3>Apps that never prompt</h3>
           <p>
-            Save one compressed recording of each meeting next to its note, so you can play it back
-            from the transcript, plus your microphone on its own so Coaching can measure your voice.
-            Recordings stay on this Mac. A recording you have not played for 30 days is deleted
-            automatically; the note, transcript and voice stats are always kept.
+            Hush does not offer to record when only these apps are using the microphone. To add one,
+            tick "Don't ask for this app" on the meeting prompt.
           </p>
         </div>
-        <Toggle
-          label="Keep meeting recordings"
-          checked={settings.recording.keep_audio}
-          disabled={saving}
-          onChange={(v) => void setKeepAudio(v)}
-        />
-      </div>
-    </section>
+        {settings.detection.ignored_apps.length > 0 && (
+          <ul className="ignored-apps">
+            {settings.detection.ignored_apps.map((app) => (
+              <li key={app}>
+                <span>{app}</span>
+                <button
+                  className="btn btn-ghost"
+                  disabled={saving}
+                  onClick={() => void unignore(app)}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
   );
 }
 

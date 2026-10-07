@@ -133,7 +133,7 @@ audio_store.py opt-in kept audio ([recording] keep_audio): each source's
                process's are cleaned; unplayed 30 days (mtime) → purged
 config.py      optional ~/.config/whisper-to-me/config.toml (notes_dir,
                [obsidian] vault, [notion] token+database_id, [templates]
-               default+favorites); read fresh per
+               default+favorites, [detection] ignored_apps); read fresh per
                use — no restart needed after edits; save_config writes it back
                for the UI's Settings → Connections (local disk, chmod 600, no
                network — connecting is never a token-verification call)
@@ -143,7 +143,10 @@ notion_export.py  the sanctioned Notion push: markdown→blocks, page create;
                user-initiated only (wtm push / UI button), preview first
 watch.py       meeting detection: CoreAudio mic-in-use + Zoom CptHost process;
                mic_in_use_by_others (macOS 14+ process objects) = the meeting-
-               END signal while we hold the mic ourselves; title hints from
+               END signal while we hold the mic ourselves; [detection]
+               ignored_apps (the prompt's "Don't ask for this app") are
+               skipped by name — only-ignored-apps-on-the-mic never
+               prompts, an unnamed process still does; title hints from
                Calendar.app / Zoom window (permission-gated). See
                docs/meeting-detection.md for the research + design
 session.py     orchestration: sources ("You" mic / "Others" system), workers,
@@ -348,6 +351,10 @@ Key invariants:
   `mic_in_use_by_others` excludes our pid *and* every `Recorder.helper_pid`
   (the system-audio tap is a child process) — forget one and every detected
   recording runs forever (or worse, our own tap keeps "the meeting" alive).
+  It also skips ScreenCaptureKit's `/usr/libexec/replayd` (`_CAPTURE_DAEMONS`):
+  replayd runs audio input for as long as our tap captures, so counting it
+  armed the signal at once and it never fired (Oct 2026: the daemon log had
+  zero mic-release stops across months of detected recordings).
   The signal also only arms after another process was actually seen on the
   mic (`call_app_seen`), and `None` (API missing, pre-macOS-14) must stay "no
   signal → silence timeout", never a stop (runner.meeting_end_condition).

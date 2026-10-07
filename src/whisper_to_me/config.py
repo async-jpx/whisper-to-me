@@ -24,6 +24,8 @@ sent by the sanctioned per-note push (see notion_export.py).
     favorites = ["standup"]
     [recording]
     keep_audio = false                  # keep each meeting's audio (local m4a)
+    [detection]
+    ignored_apps = ["Voice Memos"]      # never prompt when only these use the mic
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ class Config:
     default_template: str | None = None
     favorite_templates: tuple[str, ...] = ()
     keep_audio: bool = False
+    ignored_apps: frozenset[str] = frozenset()
 
     @property
     def notion_configured(self) -> bool:
@@ -90,6 +93,12 @@ def load_config(path: Path | None = None) -> Config:
     recording = data.get("recording")
     if not isinstance(recording, dict):
         recording = {}
+    detection = data.get("detection")
+    if not isinstance(detection, dict):
+        detection = {}
+    ignored = detection.get("ignored_apps")
+    if not isinstance(ignored, list):
+        ignored = []
     return Config(
         notes_dir=_path(data.get("notes_dir")),
         obsidian_vault=_path(obsidian.get("vault")),
@@ -98,6 +107,7 @@ def load_config(path: Path | None = None) -> Config:
         default_template=_string(tmpl.get("default")),
         favorite_templates=tuple(filter(None, map(_string, favorites))),
         keep_audio=recording.get("keep_audio") is True,
+        ignored_apps=frozenset(filter(None, map(_string, ignored))),
     )
 
 
@@ -115,6 +125,7 @@ _FIELDS: dict[str, tuple[str | None, str]] = {
     "default_template": ("templates", "default"),
     "favorite_templates": ("templates", "favorites"),
     "keep_audio": ("recording", "keep_audio"),
+    "ignored_apps": ("detection", "ignored_apps"),
 }
 
 

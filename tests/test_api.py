@@ -284,7 +284,20 @@ def test_settings_get_defaults(client, config_path):
         "notion_token_set": False,
         "templates": {"default": None},
         "recording": {"keep_audio": False},
+        "detection": {"ignored_apps": []},
     }
+
+
+def test_set_ignored_apps(client, config_path):
+    from whisper_to_me.config import load_config
+
+    resp = client.put(
+        "/api/settings/detection", json={"ignored_apps": ["Voice Memos", " ", "Voice Memos"]}
+    )
+    assert resp.json()["detection"] == {"ignored_apps": ["Voice Memos"]}
+    assert load_config(config_path).ignored_apps == frozenset({"Voice Memos"})
+    resp = client.put("/api/settings/detection", json={"ignored_apps": []})
+    assert resp.json()["detection"] == {"ignored_apps": []}
 
 
 def test_connect_and_disconnect_obsidian(client, config_path):
@@ -315,6 +328,7 @@ def test_connect_notion_stores_pair_without_leaking_token(client, config_path):
         "notion_token_set": True,
         "templates": {"default": None},
         "recording": {"keep_audio": False},
+        "detection": {"ignored_apps": []},
     }
     assert "ntn_super_secret" not in resp.text  # the token never goes over the wire
 
@@ -1024,3 +1038,56 @@ def test_template_favorite_and_default(client):
     assert client.put("/api/settings/default-template", json={"name": "nope"}).status_code == 400
     resp = client.put("/api/settings/default-template", json={"name": None})
     assert resp.json()["templates"] == {"default": None}
+
+
+def test_prompt_names_the_app_and_dismiss_can_ignore_it(detecting):
+    from whisper_to_me.config import load_config
+
+    tc = detecting()
+    tc.probe.trigger = "mic"
+    tc.probe.app = "Voice Memos"
+    prompt = _prompt(tc)
+    assert prompt["app"] == "Voice Memos"
+    url = f"/api/prompts/{prompt['id']}"
+    assert tc.post(url, json={"answer": "dismiss", "ignore_app": True}).status_code == 202
+    assert load_config().ignored_apps == frozenset({"Voice Memos"})
+    assert _status(tc)["state"] == "idle"
+
+
+def test_ignore_app_is_dropped_with_a_refused_answer(detecting):
+    from whisper_to_me.config import load_config
+
+    tc = detecting()
+    tc.probe.trigger = "mic"
+    tc.probe.app = "Voice Memos"
+    prompt = _prompt(tc)
+    resp = tc.post("/api/prompts/not-the-live-one", json={"answer": "dismiss", "ignore_app": True})
+    assert resp.status_code == 409
+    assert tc.post(f"/api/prompts/{prompt['id']}", json={"answer": "dismiss"}).status_code == 202
+    assert load_config().ignored_apps == frozenset()
+
+
+def test_record_with_ignore_app_still_records(detecting, monkeypatch):
+    import whisper_to_me.server as server
+    from whisper_to_me.config import load_config
+
+    def fake_record_session(transcriber, title, notes_dir, **kwargs):
+        kwargs["events"](
+            {"type": "status", "state": "recording", "title": title,
+             "started": kwargs["started"].isoformat()}
+        )
+        kwargs["stop_event"].wait(timeout=10)
+        return [], kwargs["started"]
+
+    monkeypatch.setattr(server, "record_session", fake_record_session)
+    monkeypatch.setattr(server, "summarize_and_save", lambda *a, **kw: a[3] / "x.md")
+    tc = detecting()
+    tc.probe.trigger = "zoom"
+    tc.probe.app = "Zoom"
+    prompt = _prompt(tc)
+    resp = tc.post(f"/api/prompts/{prompt['id']}", json={"answer": "record", "ignore_app": True})
+    assert resp.status_code == 202
+    _wait_until(lambda: _status(tc)["state"] == "recording")
+    assert load_config().ignored_apps == frozenset({"Zoom"})
+    assert tc.post("/api/record/stop").status_code == 202
+    _wait_until(lambda: _status(tc)["state"] == "idle")

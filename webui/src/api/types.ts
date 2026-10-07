@@ -9,6 +9,8 @@ export interface MeetingPrompt {
   id: string;
   title: string;
   trigger: "zoom" | "mic";
+  /* The app holding the mic, when known. */
+  app: string | null;
   expires_in_s: number;
   timeout_s: number;
 }
@@ -130,6 +132,8 @@ export interface Settings {
   /* True when a token is on file. The token itself is never sent to the page. */
   notion_token_set: boolean;
   recording: { keep_audio: boolean };
+  /* Apps whose mic use never opens a meeting prompt. */
+  detection: { ignored_apps: string[] };
   /* The user's chosen default template; null = none chosen. */
   templates: { default: string | null };
 }
