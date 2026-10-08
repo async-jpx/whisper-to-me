@@ -70,7 +70,11 @@ audio.py       Recorder (mic, 16kHz mono blocks -> energy-VAD utterance chunker,
                helper, pumps raw PCM into the same chunker) + build_system_tap()
 system_audio_tap.swift  ScreenCaptureKit helper: all-app system audio -> 16kHz
                mono f32 on stdout; compiled on demand to ~/.cache/whisper-to-me/
-transcribe.py  faster-whisper wrapper (large-v3-turbo int8, language lock-on)
+transcribe.py  faster-whisper wrapper (large-v3-turbo int8, language lock-on);
+               one worker per model — see the CPU sharp edge below
+preview.py     DraftTracker: incremental live drafts — decodes only the audio
+               after the last committed Whisper segment of the current
+               utterance and keeps the committed text as the prefix
 dedup.py       cross-source echo filter: drops "You" segments that duplicate
                an "Others" segment (speaker bleed into the mic)
 echo_cancel.py acoustic echo cancellation: system audio subtracted from the
@@ -342,6 +346,19 @@ Key invariants:
   don't need a 24B coder.
 - **Zoom/Teams virtual audio devices carry no meeting audio in normal calls** —
   they're only loopback fallbacks. The ScreenCaptureKit tap is the real path.
+- **Live CPU load is constant, not growing — and the monologue is the stress
+  case** (transcribe.py/preview.py/server.py). A 7-minute meeting that makes
+  the Mac crawl is not a leak: replaying a 10-min two-sided fixture paced to
+  real time showed flat memory and empty queues, but one person talking for
+  30 s at a stretch (every real call) peaked at ~1190% CPU on 14 cores. Two
+  causes, both fixed Oct 2026: the draft preview re-decoded the *whole*
+  growing utterance every 2 s (2+4+…+30 s = 5× the meeting's audio through
+  tiny), and both Whisper models ran 2 workers × 7 threads (28 threads).
+  Now drafts are incremental (DraftTracker), the tiny model gets 1 worker ×
+  2 threads, and the main model 1 worker — ~880% → ~440% average in that
+  regime. Don't reintroduce `num_workers=2` or whole-buffer previews without
+  re-measuring under continuous speech; test with a paced replay of a long
+  `say` monologue, not `wtm simulate` (which pumps files unpaced).
 - faster-whisper `large-v3-turbo` int8 ≈ 0.23× real-time on this M-series CPU;
   keep `condition_on_previous_text=False` for chunked live use, and keep the
   language lock-on (auto-detect flaps between languages on accented speech).

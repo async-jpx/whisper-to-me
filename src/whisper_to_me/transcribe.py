@@ -10,16 +10,24 @@ from faster_whisper import WhisperModel
 
 
 class Transcriber:
-    def __init__(self, model_size: str = "large-v3-turbo", language: str | None = None):
+    def __init__(
+        self,
+        model_size: str = "large-v3-turbo",
+        language: str | None = None,
+        num_workers: int = 1,
+        cpu_threads: int | None = None,
+    ):
         self.language = language
-        # num_workers=2 lets the mic and system-audio streams decode
-        # concurrently (ctranslate2 handles the thread-safety).
+        # One worker: the mic and system-audio chunks decode one after the
+        # other. Two concurrent decodes (each cpu_threads wide) plus the
+        # preview model saturated every core during a monologue and made the
+        # whole machine crawl; serial decoding stays well under real time.
         self.model = WhisperModel(
             model_size,
             device="auto",
             compute_type="int8",
-            num_workers=2,
-            cpu_threads=max(4, (os.cpu_count() or 8) // 2),
+            num_workers=num_workers,
+            cpu_threads=cpu_threads if cpu_threads is not None else max(4, (os.cpu_count() or 8) // 2),
         )
 
     def transcribe_chunk(self, audio: np.ndarray) -> list[tuple[float, float, str]]:
@@ -45,8 +53,9 @@ class Transcriber:
             self.language = info.language
         return timed
 
-    def transcribe_preview(self, audio: np.ndarray) -> str:
-        """Fast, replaceable draft for the UI; final chunks use the full pass."""
+    def transcribe_preview(self, audio: np.ndarray) -> list[tuple[float, float, str]]:
+        """Fast, replaceable draft for the UI as (start_s, end_s, text)
+        segments; final chunks use the full pass."""
         segments, _ = self.model.transcribe(
             audio,
             language=self.language,
@@ -54,7 +63,9 @@ class Transcriber:
             beam_size=1,
             condition_on_previous_text=False,
         )
-        return " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+        return [
+            (seg.start, seg.end, seg.text.strip()) for seg in segments if seg.text.strip()
+        ]
 
     def transcribe_file(self, path: str) -> list[tuple[float, str]]:
         """Transcribe an audio file; returns (start_seconds, text) lines."""

@@ -185,7 +185,9 @@ class SessionManager:
                     self._previewer = self._get_transcriber()
                     return self._previewer
                 try:
-                    self._previewer = load_transcriber("tiny", self.opts.language)
+                    # Drafts are a side show: two threads keep the tiny model
+                    # off the cores the main model and the call app need.
+                    self._previewer = load_transcriber("tiny", self.opts.language, cpu_threads=2)
                 except Exception as exc:
                     console.print(f"[yellow]Tiny preview model unavailable: {exc}[/yellow]")
                     self._previewer = self._get_transcriber()

@@ -23,7 +23,7 @@ class FakeTranscriber:
 
 class FakePreviewer:
     def transcribe_preview(self, chunk):
-        return "draft words"
+        return [(0.0, len(chunk) / audio.SAMPLE_RATE, "draft words")]
 
 
 def wait_for(predicate, timeout=3.0):
