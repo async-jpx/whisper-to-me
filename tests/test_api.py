@@ -674,7 +674,7 @@ def detecting(tmp_path, monkeypatch):
 
     loads = []
     monkeypatch.setattr(
-        server, "load_transcriber", lambda model, language: loads.append(model) or object()
+        server, "load_transcriber", lambda model, language, **kw: loads.append(model) or object()
     )
     probe = ScriptedProbe()
 

@@ -10,7 +10,7 @@ from typing import Callable
 
 from rich.console import Console
 
-from . import audio, audio_store, dedup, notes, templates
+from . import audio, audio_store, dedup, notes, preview, templates
 from . import summarize as summ
 
 console = Console()
@@ -75,11 +75,11 @@ def resolve_sink(events: EventSink | None) -> EventSink:
     return events if events is not None else _console_sink
 
 
-def load_transcriber(model: str, language: str | None):
+def load_transcriber(model: str, language: str | None, cpu_threads: int | None = None):
     from .transcribe import Transcriber  # deferred: heavy import
 
     with console.status(f"Loading Whisper model '{model}' (downloads once, then offline)…"):
-        return Transcriber(model_size=model, language=language)
+        return Transcriber(model_size=model, language=language, cpu_threads=cpu_threads)
 
 
 def _system_audio_sources(system_device: str) -> list[tuple[str, audio.Recorder]]:
@@ -251,6 +251,7 @@ def record_session(
     def make_preview_worker(speaker: str, recorder: audio.Recorder) -> threading.Thread:
         def worker() -> None:
             previewer = None
+            draft = preview.DraftTracker()
             while True:
                 item = recorder.previews.get()
                 if item is None:
@@ -265,7 +266,7 @@ def record_session(
                         sink({"type": "error", "message": f"Live preview unavailable: {exc}"})
                         return
                 try:
-                    text = previewer.transcribe_preview(chunk)
+                    text = draft.update(captured_at, chunk, previewer.transcribe_preview)
                 except Exception as exc:
                     sink({"type": "error", "message": f"Live preview unavailable: {exc}"})
                     return
