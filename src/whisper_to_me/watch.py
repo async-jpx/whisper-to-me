@@ -30,7 +30,14 @@ _coreaudio = ctypes.CDLL(
     "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
 )
 
+_libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+
 _SYSTEM_OBJECT = 1  # kAudioObjectSystemObject
+
+# ScreenCaptureKit's capture daemon runs audio input for as long as *any*
+# stream captures audio — our own system-audio tap included — so it must
+# never count as "another app on the microphone".
+_CAPTURE_DAEMONS = frozenset({"/usr/libexec/replayd"})
 
 
 def _fourcc(code: str) -> int:
@@ -94,12 +101,19 @@ def _get_pid_property(object_id: int, selector: str) -> int | None:
     return value.value if status == 0 else None
 
 
+def _exe_path(pid: int) -> str | None:
+    buf = ctypes.create_string_buffer(4096)  # PROC_PIDPATHINFO_MAXSIZE
+    n = _libproc.proc_pidpath(c_int32(pid), buf, c_uint32(sizeof(buf)))
+    return buf.value.decode(errors="replace") if n > 0 else None
+
+
 def _other_input_pids(exclude_pids: frozenset[int] | set[int]) -> list[int] | None:
     """PIDs of processes other than us (and `exclude_pids`) running audio
     input, via the macOS 14+ per-process audio objects
     (kAudioHardwarePropertyProcessObjectList 'prs#', kAudioProcessPropertyPID
     'ppid', kAudioProcessPropertyIsRunningInput 'piri'). None when the API is
-    unavailable (older macOS) or errors."""
+    unavailable (older macOS) or errors. ScreenCaptureKit's daemon is left
+    out: it shows up as input whenever system audio is being captured."""
     processes = _get_object_list(_SYSTEM_OBJECT, "prs#")  # ...ProcessObjectList
     if processes is None:
         return None
@@ -110,7 +124,7 @@ def _other_input_pids(exclude_pids: frozenset[int] | set[int]) -> list[int] | No
         if not running:
             continue
         pid = _get_pid_property(proc_obj, "ppid")  # ...PropertyPID
-        if pid is not None and pid not in own:
+        if pid is not None and pid not in own and _exe_path(pid) not in _CAPTURE_DAEMONS:
             pids.append(pid)
     return pids
 
@@ -163,13 +177,27 @@ def app_name_for_pid(pid: int) -> str | None:
     return _APP_ALIASES.get(name.strip(), name.strip())
 
 
-def mic_app_name(exclude_pids: frozenset[int] | set[int] = frozenset()) -> str | None:
-    """The app (other than us) currently holding the microphone, if any."""
+def mic_app_name(
+    exclude_pids: frozenset[int] | set[int] = frozenset(),
+    ignored: frozenset[str] = frozenset(),
+) -> str | None:
+    """The app (other than us, and not one the user ignores) currently
+    holding the microphone, if any."""
     for pid in _other_input_pids(exclude_pids) or []:
         name = app_name_for_pid(pid)
-        if name:
+        if name and name not in ignored:
             return name
     return None
+
+
+def _only_ignored_apps_on_mic(ignored: frozenset[str]) -> bool:
+    """True when every process on the mic belongs to an app the user said
+    never to prompt for. A process we can't name (no app bundle) or an
+    unavailable per-process API means we can't tell, so it is not ignored."""
+    pids = _other_input_pids(frozenset())
+    if not pids:
+        return False
+    return all(app_name_for_pid(pid) in ignored for pid in pids)
 
 
 def zoom_meeting_active() -> bool:
@@ -179,11 +207,13 @@ def zoom_meeting_active() -> bool:
     )
 
 
-def detect_meeting() -> str | None:
-    """Return a trigger label ('zoom' / 'mic') if a meeting seems active."""
-    if zoom_meeting_active():
+def detect_meeting(ignored: frozenset[str] = frozenset()) -> str | None:
+    """Return a trigger label ('zoom' / 'mic') if a meeting seems active.
+    `ignored` names apps (as `app_name_for_pid` reports them, so Zoom is
+    "Zoom") the user chose never to be prompted for."""
+    if zoom_meeting_active() and "Zoom" not in ignored:
         return "zoom"
-    if mic_in_use():
+    if mic_in_use() and not (ignored and _only_ignored_apps_on_mic(ignored)):
         return "mic"
     return None
 

@@ -106,7 +106,7 @@ class MeetingProbe(Protocol):
 
 class SystemProbe:
     def detect(self) -> runner.Trigger | None:
-        return watch.detect_meeting()
+        return watch.detect_meeting(load_config().ignored_apps)
 
     def title_hint(self, trigger: runner.Trigger) -> str | None:
         return watch.meeting_title_hint(trigger)
@@ -114,7 +114,9 @@ class SystemProbe:
     def meeting_app(self, trigger: runner.Trigger | None) -> str | None:
         if trigger is None:  # manual start: whoever holds the mic may be dictation
             return "Zoom" if watch.zoom_meeting_active() else None
-        return "Zoom" if trigger == "zoom" else watch.mic_app_name()
+        return "Zoom" if trigger == "zoom" else watch.mic_app_name(
+            ignored=load_config().ignored_apps
+        )
 
 
 def status_wire(state: State, now_mono: float, now: datetime, timeout_s: float) -> dict:
@@ -134,6 +136,7 @@ def status_wire(state: State, now_mono: float, now: datetime, timeout_s: float) 
                 "id": prompt.id,
                 "title": prompt.title,
                 "trigger": prompt.trigger,
+                "app": prompt.app,
                 "expires_in_s": round(max(0.0, prompt.deadline - now_mono), 1),
                 "timeout_s": timeout_s,
             }
@@ -435,14 +438,22 @@ class SessionManager:
             raise BusyError(result.reason)
         self._launch(result)
 
-    def answer_prompt(self, prompt_id: str, choice: runner.Answer) -> None:
+    def answer_prompt(
+        self, prompt_id: str, choice: runner.Answer, ignore_app: bool = False
+    ) -> None:
+        with self._lock:
+            state = self._state
+        live = isinstance(state, Prompting) and state.prompt.id == prompt_id
+        app = state.prompt.app if live else None
         result = self._transition(
             lambda s: runner.answer(s, prompt_id, choice, datetime.now(), time.monotonic())
         )
+        if isinstance(result, Refused):
+            raise BusyError(result.reason)
         if isinstance(result, Active):
             self._launch(result)
-        elif isinstance(result, Refused):
-            raise BusyError(result.reason)
+        if ignore_app and app:
+            save_config(lambda cfg: {"ignored_apps": sorted(cfg.ignored_apps | {app})})
 
     def stop(self) -> None:
         result = self._transition(runner.stop)
@@ -541,6 +552,7 @@ class TaskToggleBody(BaseModel):
 
 class PromptAnswerBody(BaseModel):
     answer: runner.Answer
+    ignore_app: bool = False  # never prompt again for the prompt's app
 
 
 class SimulateBody(BaseModel):
@@ -606,6 +618,10 @@ class ObsidianSettingsBody(BaseModel):
 
 class RecordingSettingsBody(BaseModel):
     keep_audio: bool
+
+
+class DetectionSettingsBody(BaseModel):
+    ignored_apps: list[str]
 
 
 class NotionSettingsBody(BaseModel):
@@ -780,9 +796,10 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
     @app.post("/api/prompts/{prompt_id}", status_code=202)
     def answer_prompt(prompt_id: str, body: PromptAnswerBody):
         """Answer the live meeting prompt by id: record starts the detected
-        meeting, dismiss skips it until its trigger clears."""
+        meeting, dismiss skips it until its trigger clears. ignore_app also
+        stops prompting for the prompt's app from now on."""
         try:
-            manager.answer_prompt(prompt_id, body.answer)
+            manager.answer_prompt(prompt_id, body.answer, body.ignore_app)
         except BusyError as exc:
             raise HTTPException(status_code=409, detail="prompt expired") from exc
         return {"ok": True}
@@ -1022,6 +1039,7 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
             "notion_token_set": bool(cfg.notion_token),    # never the token itself
             "templates": {"default": cfg.default_template},
             "recording": {"keep_audio": cfg.keep_audio},
+            "detection": {"ignored_apps": sorted(cfg.ignored_apps)},
         }
 
     @app.get("/api/settings")
@@ -1038,6 +1056,11 @@ def create_app(opts: ServerOptions, probe: MeetingProbe | None = None) -> FastAP
     @app.put("/api/settings/recording")
     def set_recording(body: RecordingSettingsBody):
         save_config({"keep_audio": body.keep_audio})
+        return _settings_state()
+
+    @app.put("/api/settings/detection")
+    def set_detection(body: DetectionSettingsBody):
+        save_config({"ignored_apps": sorted({a.strip() for a in body.ignored_apps if a.strip()})})
         return _settings_state()
 
     @app.delete("/api/settings/obsidian")

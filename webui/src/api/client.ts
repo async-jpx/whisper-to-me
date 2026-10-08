@@ -70,14 +70,15 @@ function parseNoteMeta(w: WireNoteMeta): NoteMeta {
   };
 }
 
-type WireSettings = Omit<Settings, "recording" | "templates"> &
-  Partial<Pick<Settings, "recording" | "templates">>;
+type WireSettings = Omit<Settings, "recording" | "templates" | "detection"> &
+  Partial<Pick<Settings, "recording" | "templates" | "detection">>;
 
 function parseSettings(w: WireSettings): Settings {
   return {
     ...w,
     recording: w.recording ?? { keep_audio: false },
     templates: w.templates ?? { default: null },
+    detection: w.detection ?? { ignored_apps: [] },
   };
 }
 
@@ -150,6 +151,12 @@ export const api = {
     });
     return parseSettings(await getJson<WireSettings>("/api/settings"));
   },
+  setIgnoredApps: async (ignoredApps: string[]) =>
+    parseSettings(
+      await sendJson<WireSettings>("PUT", "/api/settings/detection", {
+        ignored_apps: ignoredApps,
+      }),
+    ),
   connectObsidian: async (vault: string) =>
     parseSettings(await sendJson<WireSettings>("PUT", "/api/settings/obsidian", { vault })),
   disconnectObsidian: async () =>

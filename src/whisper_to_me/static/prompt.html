@@ -17,6 +17,7 @@
     --accent: #2383e2; --accent-hover: #1a73cc; --on-accent: #fff;
     --neutral: rgba(15, 23, 42, 0.06); --neutral-hover: rgba(15, 23, 42, 0.10);
     --track: rgba(15, 23, 42, 0.06);
+    --box: #ffffff; --box-edge: rgba(15, 23, 42, 0.26); --box-edge-hover: rgba(15, 23, 42, 0.42);
     --mark: #0f172a; --mark-bar: #7cc4ff;
     --shadow: 0 10px 28px -6px rgba(15, 23, 42, 0.28), 0 2px 6px rgba(15, 23, 42, 0.10);
     --highlight: transparent;
@@ -28,6 +29,8 @@
       --accent: #4dabf7; --accent-hover: #6cb9f8; --on-accent: #0b1a2b;
       --neutral: rgba(255, 255, 255, 0.07); --neutral-hover: rgba(255, 255, 255, 0.12);
       --track: rgba(255, 255, 255, 0.06);
+      --box: rgba(255, 255, 255, 0.04); --box-edge: rgba(255, 255, 255, 0.26);
+      --box-edge-hover: rgba(255, 255, 255, 0.42);
       --mark: #0f172a; --mark-bar: #4dabf7;
       --shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
       --highlight: rgba(255, 255, 255, 0.06);
@@ -95,6 +98,41 @@
   #source:empty { display: none; }
 
   .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  /* With an app to ignore: the macOS suppression-checkbox layout — the
+     option bottom-left, the buttons at their natural width on the right. */
+  .actions.with-ignore { display: flex; align-items: center; }
+  .actions.with-ignore button { padding: 0 14px; }
+
+  .ignore {
+    position: relative; flex: 1; min-width: 0; height: 30px;
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--text-secondary); cursor: pointer;
+    transition: color 120ms ease;
+  }
+  .ignore[hidden] { display: none; }
+  .ignore:hover { color: var(--text); }
+  .ignore input {
+    position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0;
+    pointer-events: none;
+  }
+  .ignore .box {
+    flex: none; width: 14px; height: 14px; border-radius: 4px; box-sizing: border-box;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--box); box-shadow: inset 0 0 0 1px var(--box-edge);
+    transition: background-color 120ms ease, box-shadow 120ms ease;
+  }
+  .ignore:hover .box { box-shadow: inset 0 0 0 1px var(--box-edge-hover); }
+  .ignore .box svg {
+    width: 10px; height: 10px; fill: none; stroke: var(--on-accent);
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    opacity: 0; transform: scale(0.6);
+    transition: opacity 120ms ease, transform 120ms ease;
+  }
+  .ignore input:checked + .box { background: var(--accent); box-shadow: none; }
+  .ignore input:checked + .box svg { opacity: 1; transform: none; }
+  .ignore input:focus-visible + .box { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .ignore input:disabled ~ * { opacity: 0.45; }
+  .ignore-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   button {
     font: inherit; font-size: 13px; font-weight: 500;
     height: 30px; border-radius: 8px; border: 0; cursor: pointer;
@@ -141,7 +179,12 @@
         <div id="source"></div>
       </div>
     </div>
-    <div class="actions">
+    <div class="actions" id="actions">
+      <label class="ignore" id="ignore" hidden>
+        <input type="checkbox" id="ignore-box">
+        <span class="box" aria-hidden="true"><svg viewBox="0 0 10 10"><path d="M2 5.2 4.1 7.3 8 2.8"/></svg></span>
+        <span class="ignore-text">Don't ask for this app</span>
+      </label>
       <button id="dismiss" disabled>Dismiss</button>
       <button id="record" class="primary" disabled><span class="rec"></span><span>Record</span></button>
     </div>
@@ -154,6 +197,9 @@
   const sourceEl = document.getElementById("source");
   const recordBtn = document.getElementById("record");
   const dismissBtn = document.getElementById("dismiss");
+  const actionsEl = document.getElementById("actions");
+  const ignoreEl = document.getElementById("ignore");
+  const ignoreBox = document.getElementById("ignore-box");
   const countdownEl = document.getElementById("countdown");
   const barEl = document.getElementById("bar");
   const SOURCES = { zoom: "Zoom call", mic: "Microphone in use" };
@@ -163,7 +209,7 @@
   let timeoutS = 60;
 
   function setEnabled(on) {
-    recordBtn.disabled = dismissBtn.disabled = !on;
+    recordBtn.disabled = dismissBtn.disabled = ignoreBox.disabled = !on;
   }
 
   function apply(status) {
@@ -177,10 +223,14 @@
     }
     if (p.id !== promptId) {
       promptId = p.id;
+      ignoreBox.checked = false;
       setEnabled(true);
     }
     titleEl.textContent = p.title || "Meeting";
-    sourceEl.textContent = SOURCES[p.trigger] || "";
+    sourceEl.textContent = (p.trigger !== "zoom" && p.app) || SOURCES[p.trigger] || "";
+    ignoreEl.hidden = !p.app;
+    ignoreEl.title = p.app ? `Never ask when ${p.app} uses the microphone` : "";
+    actionsEl.classList.toggle("with-ignore", Boolean(p.app));
     timeoutS = p.timeout_s > 0 ? p.timeout_s : 60;
     deadlineMs = performance.now() + p.expires_in_s * 1000;
     tick();
@@ -207,7 +257,7 @@
       const resp = await fetch(`/api/prompts/${encodeURIComponent(id)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answer }),
+        body: JSON.stringify({ answer, ignore_app: !ignoreEl.hidden && ignoreBox.checked }),
       });
       ok = resp.ok;
     } catch (err) {}

@@ -151,3 +151,19 @@ def test_save_over_malformed_file_starts_clean(tmp_path):
     path.write_text("notes_dir = [unclosed", encoding="utf-8")
     cfg = save_config({"obsidian_vault": "/tmp/v"}, path)
     assert cfg.obsidian_vault == Path("/tmp/v")
+
+
+def test_ignored_apps_roundtrip_and_clear(tmp_path):
+    path = tmp_path / "config.toml"
+    cfg = save_config({"ignored_apps": ["Voice Memos", " ", "QuickTime Player"]}, path)
+    assert cfg.ignored_apps == frozenset({"Voice Memos", "QuickTime Player"})
+    with path.open("rb") as fh:
+        assert tomllib.load(fh)["detection"] == {"ignored_apps": ["Voice Memos", "QuickTime Player"]}
+    assert save_config({"ignored_apps": []}, path).ignored_apps == frozenset()
+    assert "detection" not in path.read_text(encoding="utf-8")
+
+
+def test_ignored_apps_wrong_type_is_ignored(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[detection]\nignored_apps = "Voice Memos"\n', encoding="utf-8")
+    assert load_config(path).ignored_apps == frozenset()

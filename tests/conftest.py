@@ -15,11 +15,11 @@ try:
     import whisper_to_me.watch  # noqa: F401  (macOS: the real module loads)
 except OSError:  # no CoreAudio: not macOS
     stub = types.ModuleType("whisper_to_me.watch")
-    stub.detect_meeting = lambda: None
+    stub.detect_meeting = lambda ignored=frozenset(): None
     stub.meeting_title_hint = lambda trigger: None
     stub.zoom_meeting_active = lambda: False
     stub.mic_in_use_by_others = lambda exclude_pids=frozenset(): None
-    stub.mic_app_name = lambda exclude_pids=frozenset(): None
+    stub.mic_app_name = lambda exclude_pids=frozenset(), ignored=frozenset(): None
     sys.modules["whisper_to_me.watch"] = stub
 
 
